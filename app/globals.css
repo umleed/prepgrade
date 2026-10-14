@@ -1,26 +1,153 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+ * PrepGrade design tokens (Tailwind CSS v4 — CSS-first configuration).
+ * Visual language per AGENTS.md §8: light neutral surfaces, white cards,
+ * restrained blue primary actions, navy/charcoal text, calm status colours.
+ * These tokens generate utilities such as bg-brand, text-ink, rounded-card,
+ * shadow-card, so screens stay consistent without ad-hoc hex values.
+ */
+@theme {
+  /* Brand / primary — restrained, trustworthy blue */
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+  --color-brand: var(--color-brand-600);
+  --color-brand-hover: var(--color-brand-700);
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  /* Neutrals & surfaces */
+  --color-canvas: #f8fafc; /* page background (slate-50) */
+  --color-surface: #ffffff; /* card background */
+  --color-surface-muted: #f1f5f9; /* subtle raised wells */
+  --color-border: #e2e8f0; /* default hairline borders */
+  --color-border-strong: #cbd5e1; /* emphasis borders */
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  /* Text — navy / charcoal */
+  --color-ink: #0f172a; /* primary text (slate-900) */
+  --color-ink-muted: #475569; /* secondary text (slate-600) */
+  --color-ink-subtle: #94a3b8; /* tertiary / placeholder text */
+
+  /* Status colours — `*-strong` is the accessible text tone on `*-soft` */
+  --color-success: #16a34a;
+  --color-success-strong: #15803d;
+  --color-success-soft: #f0fdf4;
+  --color-success-border: #bbf7d0;
+  --color-warning: #d97706;
+  --color-warning-strong: #b45309;
+  --color-warning-soft: #fffbeb;
+  --color-warning-border: #fde68a;
+  --color-danger: #dc2626;
+  --color-danger-strong: #b91c1c;
+  --color-danger-soft: #fef2f2;
+  --color-danger-border: #fecaca;
+  --color-info: #0284c7;
+  --color-info-strong: #0369a1;
+  --color-info-soft: #f0f9ff;
+  --color-info-border: #bae6fd;
+
+  /* Overlay scrim for modal backdrops */
+  --color-scrim: rgb(15 23 42 / 0.55);
+
+  /* Soft accents — pastel icon tiles and chart segments on the landing page
+     and the platform (super-admin) dashboards. Status messaging still uses
+     the status tones above; these are for icon backgrounds and data-viz. */
+  --color-accent-green: #059669;
+  --color-accent-green-soft: #d1fae5;
+  --color-accent-purple: #7c3aed;
+  --color-accent-purple-soft: #ede9fe;
+  --color-accent-orange: #ea580c;
+  --color-accent-orange-soft: #ffedd5;
+  --color-accent-pink: #db2777;
+  --color-accent-pink-soft: #fce7f3;
+  --color-accent-teal: #0d9488;
+  --color-accent-teal-soft: #ccfbf1;
+
+  /* Radii */
+  --radius-card: 0.75rem;
+  --radius-field: 0.5rem;
+
+  /* Typography — extra size below `text-xs` for dense tables and chips */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  /* Shadows — subtle, non-decorative */
+  --shadow-card: 0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.06);
+  --shadow-raised: 0 4px 12px -2px rgb(15 23 42 / 0.08), 0 2px 6px -2px rgb(15 23 42 / 0.06);
+
+  /* Motion — short, functional transitions only (AGENTS.md §8) */
+  --animate-fade-in: fade-in 150ms ease-out;
+  --animate-pop-in: pop-in 150ms ease-out;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: scale(0.97) translateY(2px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/*
+ * Font families are wired to the CSS variables emitted by next/font in
+ * app/layout.tsx. `inline` makes utilities reference the variables directly
+ * instead of duplicating their value.
+ */
+@theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Consistent, visible keyboard focus for accessibility (AGENTS.md §8). */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+  }
+
+  /* Shared scrim for every native <dialog> opened with showModal(). */
+  dialog::backdrop {
+    background-color: var(--color-scrim);
+  }
+
+  /* Respect users who opt out of motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }

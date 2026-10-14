@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# keep the placeholder template tracked; never ignore real secrets
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +41,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# supabase cli
+# `supabase link` / `db push` write the project ref and DB password to
+# supabase/.temp/ — never commit it (AGENTS.md §7).
+supabase/.temp/
