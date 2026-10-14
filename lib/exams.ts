@@ -469,15 +469,10 @@ export function studentExamStartGate(
   }
 }
 
-/**
- * What the explicit start action says while exam delivery (prompts 22–23)
- * is still being prepared. Kept in the pure layer so the instructions
- * screen, the server action, and their tests quote one source.
- */
-export const EXAM_START_INTERFACE_UNAVAILABLE_MESSAGE =
-  "You meet every requirement to start, but the examination interface is still being prepared — it will appear here once exam delivery is live.";
-
 // --- Builder edit safety (prompt 18) ---------------------------------------------
+// The delivery start itself lives in lib/attempts.ts + lib/data/attempts.ts
+// (prompts 22–23): once `studentExamStartGate` above allows a start,
+// `startOrResumeAttempt` creates the attempt server-side.
 
 /**
  * Whether the exam's QUESTION SET may still change. Selecting, reordering or

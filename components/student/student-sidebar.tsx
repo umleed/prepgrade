@@ -43,9 +43,9 @@ const mainNav: NavItem[] = [
     ),
   },
   {
-    // Results arrive with the grading engine (prompts 23–25).
+    // My Results (prompt 25) — the student's own released graded results.
     label: "My Results",
-    href: null,
+    href: "/student/results",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="h-5 w-5">
         <path d="M3 3v18h18" />

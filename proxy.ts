@@ -25,6 +25,10 @@ const isProtected = createRouteMatcher([
   "/onboarding(.*)",
   "/app(.*)",
   "/setup(.*)",
+  // CBT delivery (prompt 22) is a focused full-screen route mounted outside the
+  // student shell; like every protected area its real gate is requireRole in
+  // the page — this only makes an unauthenticated visit bounce to sign-in.
+  "/exam(.*)",
   // Convenience gate only — the SUPER_ADMIN check itself runs server-side in
   // requireSuperAdmin() (lib/auth/guards.ts), which is the actual enforcement.
   "/platform(.*)",

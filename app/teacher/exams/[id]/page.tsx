@@ -270,15 +270,24 @@ function ExamDetailBody({
           </Card>
 
           <Card>
-            <div className="p-6">
-              <h2 className="mb-2 text-sm font-semibold text-ink">
-                Attempts &amp; results
-              </h2>
-              <p className="text-sm text-ink-muted">
-                {exam.status === "published" || exam.status === "closed"
-                  ? "No attempts or results recorded yet. Live monitoring and results appear here once the exam has been taken."
-                  : "Attempts and results appear here after the exam is published and taken."}
-              </p>
+            <div className="flex flex-col gap-3 p-6 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="mb-2 text-sm font-semibold text-ink">
+                  Attempts &amp; results
+                </h2>
+                <p className="text-sm text-ink-muted">
+                  {exam.status === "published" || exam.status === "closed"
+                    ? "Graded results appear on the results screen once students have submitted and the exam has been graded. Open it to see each student's score, percentage, and subject breakdown."
+                    : "Attempts and results appear after the exam is published and taken."}
+                </p>
+              </div>
+              {exam.status === "published" || exam.status === "closed" ? (
+                <Link href={`/teacher/exams/${exam.id}/results`}>
+                  <Button type="button" variant="secondary" size="sm">
+                    View results
+                  </Button>
+                </Link>
+              ) : null}
             </div>
           </Card>
         </div>

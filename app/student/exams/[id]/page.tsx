@@ -314,8 +314,8 @@ export default async function StudentExamInstructionsPage({
             <h2 className="text-sm font-semibold text-ink">Ready to begin?</h2>
             <p className="text-sm text-ink-muted">
               {gate.allowed
-                ? "You meet every requirement to start. When the examination interface is live, starting here opens your attempt and begins the timer."
-                : "Review the rules above. When this exam is open to you and the interface is live, the start action will appear here."}
+                ? "You meet every requirement to start. Starting opens your attempt and begins the timer — the countdown runs on the server, so refreshing or a brief connection drop won't reset it."
+                : "Review the rules above. This exam isn't startable for you right now; the reason is shown with its status."}
             </p>
             <StartExamButton
               examId={exam.id}

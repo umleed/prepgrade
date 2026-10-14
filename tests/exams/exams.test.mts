@@ -61,7 +61,6 @@ import {
   studentExamBucket,
   studentExamEligibility,
   studentExamStartGate,
-  EXAM_START_INTERFACE_UNAVAILABLE_MESSAGE,
   toDatetimeLocalValue,
   validateExam,
   type ExamInput,
@@ -735,10 +734,11 @@ describe("studentExamStartGate", () => {
     if (!gate.allowed) assert.match(gate.message, /all the attempts/);
   });
 
-  it("quotes the shared interface-unavailable message for a permitted start", () => {
-    // The message the server action returns once every check passes today.
-    assert.equal(typeof EXAM_START_INTERFACE_UNAVAILABLE_MESSAGE, "string");
-    assert.match(EXAM_START_INTERFACE_UNAVAILABLE_MESSAGE, /examination interface/);
+  it("allows a start once every check passes (delivery now creates the attempt)", () => {
+    // Prompt 22 shipped: a permitted gate is the green light for
+    // `startOrResumeAttempt`, so the pure rule simply reports it as allowed.
+    const gate = studentExamStartGate({ ...openBase, attemptsUsed: 0, maxAttempts: 2 });
+    assert.equal(gate.allowed, true);
   });
 });
 
