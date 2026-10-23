@@ -51,6 +51,9 @@ async function requireExamManager() {
 
 function revalidateExamPaths(id?: string) {
   revalidatePath("/teacher/exams");
+  // The institution-owned exam list renders the same `exams` table; refresh it
+  // too so an admin's create/publish shows without a manual reload.
+  revalidatePath("/institution/exams");
   if (id) revalidatePath(`/teacher/exams/${id}`);
 }
 
@@ -58,12 +61,12 @@ function revalidateExamPaths(id?: string) {
 export async function createExamAction(
   input: ExamInput,
 ): Promise<ExamActionResult> {
-  const { institutionId, userId } = await requireExamManager();
+  const { institutionId, userId, role } = await requireExamManager();
 
   const errors = validateExam(input);
   if (Object.keys(errors).length > 0) return { ok: false, errors };
 
-  const result = await createExam(institutionId, userId, input);
+  const result = await createExam(institutionId, userId, input, role);
   if (!result.ok) {
     if (Object.keys(result.errors).length === 0) {
       return {

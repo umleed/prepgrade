@@ -115,6 +115,16 @@ export function CardIcon(props: IconProps) {
   );
 }
 
+export function HistoryIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3 3v5h5" />
+      <path d="M3.05 13A9 9 0 106 5.3L3 8" />
+      <path d="M12 7v5l4 2" />
+    </Svg>
+  );
+}
+
 export function ShieldIcon(props: IconProps) {
   return (
     <Svg {...props}>
@@ -248,6 +258,25 @@ export function CollapseIcon(props: IconProps) {
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <path d="M13 4v16" />
       <path d="m10 9-2 3 2 3" />
+    </Svg>
+  );
+}
+
+export function InboxIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3 12h5l1 3h6l1-3h5" />
+      <path d="M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" />
+    </Svg>
+  );
+}
+
+export function ShieldAlertIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z" />
+      <path d="M12 8v4" />
+      <path d="M12 15.5h.01" />
     </Svg>
   );
 }

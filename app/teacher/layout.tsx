@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 import { connection } from "next/server";
 import { requireRole } from "@/lib/auth/guards";
 import { roleLabel } from "@/lib/auth/roles";
-import { TeacherSidebar } from "@/components/teacher/teacher-sidebar";
+import { institutionDisplayText } from "@/lib/auth/institution-identity";
+import { getInstitutionIdentity } from "@/lib/data/institution-identity";
+import { RoleShell } from "@/components/shell/role-shell";
+import { TEACHER_MAIN_NAV } from "@/lib/navigation/teacher-nav";
 
 export const metadata: Metadata = {
   title: {
@@ -23,8 +26,8 @@ export const instant = false;
  * hold `question.manage`, and `ROLE_AREAS` grants admins the teaching area
  * too. Students and unassigned accounts are redirected before any data
  * renders; the sidebar's disabled items are presentation, not protection.
- * The question bank (prompt 15) is the first screen; the teacher dashboard
- * (prompt 26) and exam views (prompt 17) will mount under this same shell.
+ * The teacher dashboard (prompt 26) is the landing route; the question bank
+ * (prompt 15) and exam views (prompts 17–19) mount under this same shell.
  */
 export default async function TeacherLayout({
   children,
@@ -33,25 +36,31 @@ export default async function TeacherLayout({
 }) {
   await connection();
 
-  // The question bank is the first screen of this workspace; when the
-  // teacher dashboard ships (prompt 26) it becomes the landing route.
+  // The teacher dashboard (prompt 26) is the workspace landing route.
   const principal = await requireRole(["TEACHER", "INSTITUTION_ADMIN"], {
-    next: "/teacher/questions",
+    next: "/teacher",
   });
 
-  // Display fallbacks are presentation-only; the institutionId is trusted
-  // server data used for scoping queries in child pages.
-  const institutionName = principal.institutionId ?? "Your Institution";
+  // Real institution name, read from the trusted tenant id (never the UUID,
+  // never a client-supplied id) — the same honest identity the shell shows.
+  const identity = await getInstitutionIdentity({
+    userId: principal.userId,
+    institutionId: principal.institutionId,
+  });
+  const institutionName = institutionDisplayText(
+    identity.status === "resolved" ? identity.name : null,
+  );
 
   return (
-    <div className="flex h-screen overflow-hidden bg-canvas">
-      <TeacherSidebar
-        institutionName={institutionName}
-        roleLabel={roleLabel(principal.role)}
-      />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {children}
-      </div>
-    </div>
+    <RoleShell
+      institutionName={institutionName}
+      roleLabel={roleLabel(principal.role)}
+      sections={[{ items: TEACHER_MAIN_NAV }]}
+      collapseStorageKey="prepgrade.teacher.sidebar.collapsed"
+      navAriaLabel="Teaching navigation"
+      footerLink={{ label: "Back to my overview", href: "/dashboard" }}
+    >
+      {children}
+    </RoleShell>
   );
 }

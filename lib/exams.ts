@@ -346,6 +346,52 @@ export function studentExamBucket(
   return phase === "open" ? "available" : phase === "upcoming" ? "upcoming" : "completed";
 }
 
+// --- Teacher dashboard buckets (prompt 26) ------------------------------------
+
+/**
+ * Where an exam sits on the teacher's dashboard. Like the student buckets this
+ * is NOT a second status enum — it is a render-time grouping of the ONE stored
+ * lifecycle plus the availability window, judged by the same clock rules the
+ * delivery gate and `examDisplayState` use, so the dashboard can never
+ * disagree with the exam list about what is live.
+ *
+ * A teacher authors across the whole lifecycle, so — unlike a student — drafts
+ * and unpublished scheduled exams are real work-in-progress and get a bucket.
+ * `archived` returns `null`: it is history the dashboard deliberately hides.
+ */
+export const TEACHER_EXAM_BUCKETS = [
+  "draft",
+  "upcoming",
+  "active",
+  "completed",
+] as const;
+export type TeacherExamBucket = (typeof TEACHER_EXAM_BUCKETS)[number];
+
+export const TEACHER_EXAM_BUCKET_LABELS: Record<TeacherExamBucket, string> = {
+  draft: "Draft",
+  upcoming: "Upcoming",
+  active: "Active now",
+  completed: "Completed",
+};
+
+export function teacherExamBucket(
+  input: {
+    status: ExamStatus;
+    startsAt: string | null;
+    endsAt: string | null;
+    now?: Date;
+  },
+): TeacherExamBucket | null {
+  if (input.status === "archived") return null;
+  if (input.status === "draft") return "draft";
+  if (input.status === "closed") return "completed";
+  // `scheduled` is pre-publish (students cannot see it yet) — always upcoming.
+  if (input.status === "scheduled") return "upcoming";
+  // `published`: place it by its availability window, same clock as delivery.
+  const phase = examWindowPhase(input.startsAt, input.endsAt, input.now ?? new Date());
+  return phase === "upcoming" ? "upcoming" : phase === "open" ? "active" : "completed";
+}
+
 // --- Student eligibility & the start gate (prompt 21) ---------------------------
 
 /**

@@ -52,6 +52,8 @@ export function ExamForm({
   categories,
   initial,
   lockedFields = [],
+  afterSaveHref,
+  cancelHref,
 }: {
   mode: "create" | "edit";
   examId?: string;
@@ -60,6 +62,16 @@ export function ExamForm({
   initial?: ExamInput;
   /** Field names frozen by the exam's current status (edit mode). */
   lockedFields?: string[];
+  /**
+   * Where to send the user after a successful save. Defaults to the shared
+   * exam detail (`/teacher/exams/{id}`). The institution-owned create page
+   * passes an `/institution/exams` destination so an admin never leaves the
+   * Institution shell to start an assessment. Must be a plain string — server
+   * components cannot pass functions to this client form.
+   */
+  afterSaveHref?: string;
+  /** Where Cancel returns to. Defaults to the teaching exam workspace. */
+  cancelHref?: string;
 }) {
   const router = useRouter();
   const [values, setValues] = useState<ExamInput>(initial ?? EXAM_INPUT_EMPTY);
@@ -102,7 +114,7 @@ export function ExamForm({
           : await createExamAction(values);
 
       if (result.ok && result.id) {
-        router.push(`/teacher/exams/${result.id}`);
+        router.push(afterSaveHref ?? `/teacher/exams/${result.id}`);
         router.refresh();
         return;
       }
@@ -343,7 +355,10 @@ export function ExamForm({
               : "Create exam"}
         </Button>
         <Link
-          href={mode === "edit" && examId ? `/teacher/exams/${examId}` : "/teacher/exams"}
+          href={
+            cancelHref ??
+            (mode === "edit" && examId ? `/teacher/exams/${examId}` : "/teacher/exams")
+          }
         >
           <Button type="button" variant="secondary" size="md">
             Cancel

@@ -61,6 +61,7 @@ import {
 } from "@/lib/data/subjects";
 import { questionIsSelectable } from "@/lib/data/questions";
 import { recordPlatformAudit } from "@/lib/data/audit";
+import { trackProductAnalytics } from "@/lib/product-analytics/server";
 import type { UserRole } from "@/lib/auth/roles.ts";
 
 /** An exam as the app uses it (camelCase). Names/counts are read-time joins. */
@@ -502,6 +503,7 @@ export async function createExam(
   institutionId: string,
   userId: string,
   input: ExamInput,
+  actorRole: UserRole | null = null,
 ): Promise<ExamWriteResult> {
   const clean = normalizeExamInput(input);
 
@@ -521,7 +523,23 @@ export async function createExam(
     .single();
 
   if (error) throw error;
-  return { ok: true, id: (data as { id: string }).id };
+  const examId = (data as { id: string }).id;
+
+  // Product analytics (prompt 36): the draft-creation moment. The category is
+  // resolved to its catalogue NAME server-side (the stable documented
+  // dimension); role comes from the trusted principal the caller passed, and
+  // the pure layer drops it when absent. Title/text never travel.
+  const examCategory = clean.categoryId
+    ? (await listCategories()).find(
+        (category) => category.id === clean.categoryId,
+      )?.name ?? null
+    : null;
+  await trackProductAnalytics(
+    "exam_created",
+    { examId, examCategory, role: actorRole },
+    { institutionId },
+  );
+  return { ok: true, id: examId };
 }
 
 /**
@@ -1447,6 +1465,20 @@ export async function setExamStatus(
       outcome: "success",
       detail: `Published to ${audience?.classes.length ?? 0} class(es) / ${audience?.effectiveStudentCount ?? 0} student(s) effective`,
     });
+
+    // Product analytics (prompt 36): fires only on a completed transition —
+    // the CAS-guarded update above — so a refused or replayed publish cannot
+    // duplicate it. Category name and audience count only (no question set).
+    await trackProductAnalytics(
+      "exam_published",
+      {
+        examId: id,
+        examCategory: current.categoryName ?? null,
+        audienceSize: audience?.effectiveStudentCount ?? 0,
+        role: actor.role,
+      },
+      { institutionId },
+    );
   }
   return { ok: true };
 }

@@ -21,12 +21,14 @@
 
 import "server-only";
 import { createAdminClient, DataSourceUnavailableError } from "@/lib/supabase/server";
+import { trackProductAnalytics } from "@/lib/product-analytics/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { USER_ROLES, type UserRole } from "@/lib/auth/roles";
 import {
   canTransitionInstitutionStatus,
   isInstitutionStatus,
   toInstitutionContainsPattern,
+  type CleanInstitutionRegistration,
   type InstitutionStatus,
 } from "@/lib/institutions";
 
@@ -79,6 +81,10 @@ function isMissingTableError(error: unknown): boolean {
   const code = (error as { code?: string } | null)?.code;
   return code === "42P01" || code === "PGRST205";
 }
+
+/** Shared with other platform probes (lib/data/platform-plans.ts) so every
+ *  screen classifies "relation does not exist" the same way. */
+export { isMissingTableError };
 
 function unavailable(error: unknown): MetricState<never> {
   return { state: "unavailable", reason: isMissingTableError(error) ? "missing_table" : "error" };
@@ -397,12 +403,32 @@ export async function getInstitutionStatusCounts(): Promise<
 
 // --- Institution detail (single tenant, minimal personal data) --------------
 
+/** Location & contact profile as stored on the tenant record (0015). */
+export type InstitutionProfile = {
+  shortName: string | null;
+  description: string | null;
+  country: string | null;
+  state: string | null;
+  city: string | null;
+  address: string | null;
+  contactPerson: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+};
+
 export type PlatformInstitutionDetail = {
   id: string;
   name: string;
   type: string | null;
   status: InstitutionStatus;
   createdAt: string;
+  /**
+   * Registration profile fields (migration 0015). Every entry is nullable:
+   * tenants created before 0015 (or via onboarding) carry no profile data,
+   * and the UI renders "Not set" — never a guess. Populated by the platform
+   * registration flow only.
+   */
+  profile: InstitutionProfile;
   /** Membership rows bucketed by trusted role for THIS tenant; unavailable
    *  (never a fabricated zero) if the read failed. */
   members: MetricState<RoleCount[]>;
@@ -433,7 +459,9 @@ export async function getPlatformInstitutionDetail(
 
   const { data, error } = await supabase
     .from("institutions")
-    .select("id, name, created_at, status, institution_type")
+    .select(
+      "id, name, created_at, status, institution_type, short_name, description, country, state, city, address, contact_person, contact_email, contact_phone",
+    )
     .eq("id", id)
     .maybeSingle();
   if (error) throw error;
@@ -445,6 +473,15 @@ export async function getPlatformInstitutionDetail(
     created_at: string;
     status: string;
     institution_type: string | null;
+    short_name: string | null;
+    description: string | null;
+    country: string | null;
+    state: string | null;
+    city: string | null;
+    address: string | null;
+    contact_person: string | null;
+    contact_email: string | null;
+    contact_phone: string | null;
   };
 
   const [members, classes, questions, assessments] = await Promise.all([
@@ -489,6 +526,17 @@ export async function getPlatformInstitutionDetail(
     type: row.institution_type,
     status: isInstitutionStatus(row.status) ? row.status : "active",
     createdAt: row.created_at,
+    profile: {
+      shortName: row.short_name,
+      description: row.description,
+      country: row.country,
+      state: row.state,
+      city: row.city,
+      address: row.address,
+      contactPerson: row.contact_person,
+      contactEmail: row.contact_email,
+      contactPhone: row.contact_phone,
+    },
     members,
     classes,
     questions,
@@ -562,4 +610,93 @@ export async function setInstitutionStatus(
   if (!count) return { ok: false, reason: "conflict" };
 
   return { ok: true, from: current, to: next };
+}
+
+// --- Platform registration (SUPER_ADMIN "Add Institution" flow) -------------
+
+export type CreateInstitutionResult =
+  | { ok: true; id: string }
+  | { ok: false; reason: "duplicateName" };
+
+/**
+ * Insert a new institution from the platform registration flow.
+ *
+ * The input MUST already be the output of `validateInstitutionRegistration`
+ * (pure layer) — this function trusts its types, not the client. The caller
+ * (server action) enforces SUPER_ADMIN before calling; like every function
+ * here this performs no auth of its own.
+ *
+ * DUPLICATE PREVENTION, TWO LAYERS THAT AGREE:
+ * 1. Friendly pre-check: an `ilike` exact-match probe on the trimmed name
+ *    (PostgREST `ilike` without wildcards matches the whole, case-insensitive
+ *    value) against the same normalisation as the DB index. This catches the
+ *    common case with a clear reason instead of a raw constraint error.
+ * 2. The migration 0015 unique index on `lower(btrim(name))` is the real
+ *    boundary: two operators racing on the same name produce one row and a
+ *    23505 for the loser, which is mapped to the same `duplicateName` result.
+ * The initial status is NOT a parameter: the row takes the schema default
+ * ('active') — the trusted operator registering a tenant IS the approver, and
+ * a client-selectable status would be an untrusted operational flag.
+ */
+export async function createPlatformInstitution(
+  input: CleanInstitutionRegistration,
+): Promise<CreateInstitutionResult> {
+  const supabase = createAdminClient();
+
+  // 1. Pre-check the name against existing tenants. `ilike` without wildcards
+  //    is a whole-value case-insensitive match — the same equivalence as the
+  //    index expression `lower(btrim(name))` on an already-trimmed name.
+  const { data: existing, error: probeError } = await supabase
+    .from("institutions")
+    .select("id")
+    .ilike("name", input.name)
+    .limit(1);
+  if (probeError) throw probeError;
+  if ((existing?.length ?? 0) > 0) {
+    return { ok: false, reason: "duplicateName" };
+  }
+
+  // 2. Insert. status/institution id are schema-owned (defaults), never
+  //    client-shaped; only the validated registration fields are written.
+  const { data, error } = await supabase
+    .from("institutions")
+    .insert({
+      name: input.name,
+      institution_type: input.type,
+      short_name: input.shortName,
+      description: input.description,
+      country: input.country,
+      state: input.state,
+      city: input.city,
+      address: input.address,
+      contact_person: input.contactPerson,
+      contact_email: input.contactEmail,
+      contact_phone: input.contactPhone,
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    // 23505 unique_violation: the race the pre-check could not see — the DB
+    // constraint refused the second row. Report it as the same duplicate.
+    if (error.code === "23505") {
+      return { ok: false, reason: "duplicateName" };
+    }
+    throw error;
+  }
+
+  const institutionId = (data as unknown as { id: string }).id;
+
+  // Product analytics (prompt 36): the tenant-creation moment, once per row.
+  // Both gated callers of this function are server-enforced SUPER_ADMIN
+  // actions (platform registration and application approval), so the role
+  // here is a server-trusted constant, not a client value. Type only — the
+  // institution NAME never travels to analytics (AGENTS.md §7).
+  await trackProductAnalytics(
+    "institution_created",
+    { institutionType: input.type, role: "SUPER_ADMIN" },
+    { institutionId },
+  );
+
+  return { ok: true, id: institutionId };
 }

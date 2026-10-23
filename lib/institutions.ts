@@ -22,8 +22,10 @@
  * HONEST, MINIMAL FIELDS (AGENTS.md §7)
  * `institution_type` is a coarse, non-personal descriptor. It is optional and
  * has no default: an institution created before prompt 32 has no recorded type
- * and must render as "Not set" rather than be guessed. No contact details,
- * location, or billing fields exist in the schema, so none are modelled here.
+ * and must render as "Not set" rather than be guessed. The location/contact
+ * profile fields (migration 0015) exist for the platform registration flow and
+ * are validated by `validateInstitutionRegistration` below; institutions
+ * created before 0015 carry none of them and render "Not set", never a guess.
  */
 
 // --- Operational status ------------------------------------------------------
@@ -308,4 +310,390 @@ export function institutionDetailTabHref(
   return tab === DEFAULT_INSTITUTION_DETAIL_TAB
     ? base
     : `${base}?tab=${tab}`;
+}
+
+// --- Platform registration (prompt 32 follow-up: "Add Institution") ---------
+// The pure input contract behind the SUPER_ADMIN "register a new institution"
+// flow. The bounds below mirror migration 0015's CHECK constraints exactly, so
+// a value that passes here cannot be refused by the database, and one that
+// skips this layer still cannot be stored out of range. Validation is
+// fail-closed: a required field is never defaulted, an unrecognised type is
+// refused rather than guessed, and unknown input values are trimmed, bounded,
+// or reported — never silently coerced.
+
+/** Field-length bounds, mirrored from migrations 0001 (name) and 0015. */
+export const INSTITUTION_REGISTRATION_LIMITS = {
+  name: 160,
+  shortName: 40,
+  description: 500,
+  country: 60,
+  state: 60,
+  city: 80,
+  address: 200,
+  contactPerson: 120,
+  contactEmail: 254,
+  contactPhone: 16,
+} as const;
+
+/** Form fields the registration flow accepts; keys match the form inputs. */
+export type InstitutionRegistrationField =
+  | "name"
+  | "type"
+  | "shortName"
+  | "description"
+  | "country"
+  | "state"
+  | "city"
+  | "address"
+  | "contactPerson"
+  | "contactEmail"
+  | "contactPhone";
+
+/** The validated, normalised payload the data layer writes (snake_case
+ *  columns are mapped at the insert site, not here). */
+export type CleanInstitutionRegistration = {
+  name: string;
+  type: InstitutionType;
+  shortName: string | null;
+  description: string | null;
+  country: string;
+  state: string;
+  city: string;
+  address: string;
+  contactPerson: string;
+  /** Lower-cased for stable uniqueness; delivery is NOT part of this flow. */
+  contactEmail: string;
+  /** Normalised to optional `+` plus digits (see normalizeContactPhone). */
+  contactPhone: string;
+};
+
+export type InstitutionRegistrationResult =
+  | { ok: true; value: CleanInstitutionRegistration }
+  | {
+      ok: false;
+      errors: Partial<Record<InstitutionRegistrationField, string>>;
+      /** The submitted values, trimmed, so the form can re-render them. */
+      values: Record<InstitutionRegistrationField, string>;
+    };
+
+/**
+ * Uniqueness key for an institution name — lower-cased and trimmed, the exact
+ * expression behind migration 0015's unique index
+ * (`lower(btrim(name))`). The server-side pre-check and the database
+ * constraint agree through this one function, so the friendly "already
+ * exists" error and the hard 23505 refusal catch the same duplicates.
+ * (Internal whitespace is NOT collapsed on either side — documented limit.)
+ */
+export function normalizeInstitutionNameKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** Light email shape check; deliberately not an RFC parser. */
+const CONTACT_EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+/**
+ * Normalise a phone to optional `+` plus 8–15 digits (E.164-shaped, which is
+ * what Nigerian numbers with their country code look like). Spaces, dashes,
+ * dots, and parentheses are stripped before the pattern test, so "(0803) 123-
+ * 4567" and "+234 803 123 4567" both pass; letters or a bare "123" fail.
+ * Returns null when the result is not a plausible phone number.
+ */
+export function normalizeContactPhone(value: string): string | null {
+  const stripped = value.replace(/[\s().-]/g, "");
+  return /^\+?[0-9]{8,15}$/.test(stripped) ? stripped : null;
+}
+
+/** Read a form/raw value as a trimmed string (non-strings become ""). */
+function rawField(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Validate raw registration input (from a FormData-backed server action —
+ * every value is untrusted). Collects ALL field errors in one pass so the
+ * form shows every problem at once instead of one per submission.
+ */
+export function validateInstitutionRegistration(
+  raw: Record<string, unknown>,
+): InstitutionRegistrationResult {
+  const values: Record<InstitutionRegistrationField, string> = {
+    name: rawField(raw.name),
+    type: rawField(raw.type),
+    shortName: rawField(raw.shortName),
+    description: rawField(raw.description),
+    country: rawField(raw.country),
+    state: rawField(raw.state),
+    city: rawField(raw.city),
+    address: rawField(raw.address),
+    contactPerson: rawField(raw.contactPerson),
+    contactEmail: rawField(raw.contactEmail),
+    contactPhone: rawField(raw.contactPhone),
+  };
+
+  const errors: Partial<Record<InstitutionRegistrationField, string>> = {};
+  const limits = INSTITUTION_REGISTRATION_LIMITS;
+
+  // Required bounded text fields. `label` is the user-facing field name and
+  // `key` doubles as the form field and its limit entry.
+  const required: Array<{
+    key: InstitutionRegistrationField;
+    label: string;
+    max: number;
+  }> = [
+    { key: "name", label: "Institution name", max: limits.name },
+    { key: "country", label: "Country", max: limits.country },
+    { key: "state", label: "State", max: limits.state },
+    { key: "city", label: "City", max: limits.city },
+    { key: "address", label: "Full address", max: limits.address },
+    { key: "contactPerson", label: "Contact person", max: limits.contactPerson },
+  ];
+  for (const field of required) {
+    const value = values[field.key];
+    if (value.length === 0) {
+      errors[field.key] = `${field.label} is required.`;
+    } else if (value.length > field.max) {
+      errors[field.key] = `${field.label} must be ${field.max} characters or fewer.`;
+    }
+  }
+
+  // Institution type: the controlled vocabulary from 0008, required here so a
+  // platform-registered tenant always has a recorded type (unlike legacy rows,
+  // which may still render "Not set").
+  if (values.type.length === 0) {
+    errors.type = "Choose an institution type.";
+  } else if (!isInstitutionType(values.type)) {
+    errors.type = "That institution type is not supported.";
+  }
+
+  // Optional bounded text fields — blank stays null, never an empty string.
+  const optional: Array<{
+    key: InstitutionRegistrationField;
+    label: string;
+    max: number;
+  }> = [
+    { key: "shortName", label: "Short name", max: limits.shortName },
+    { key: "description", label: "Description", max: limits.description },
+  ];
+  for (const field of optional) {
+    const value = values[field.key];
+    if (value.length > field.max) {
+      errors[field.key] = `${field.label} must be ${field.max} characters or fewer.`;
+    }
+  }
+
+  // Contact email: required, light format check. No email is sent by this
+  // flow — the address records WHO to invite once admin provisioning lands.
+  if (values.contactEmail.length === 0) {
+    errors.contactEmail = "Contact email is required.";
+  } else if (values.contactEmail.length > limits.contactEmail) {
+    errors.contactEmail = `Contact email must be ${limits.contactEmail} characters or fewer.`;
+  } else if (!CONTACT_EMAIL_PATTERN.test(values.contactEmail)) {
+    errors.contactEmail = "Enter a valid email address, e.g. admin@school.edu.ng.";
+  }
+
+  // Contact phone: required, normalised server-side.
+  if (values.contactPhone.length === 0) {
+    errors.contactPhone = "Contact phone is required.";
+  } else if (normalizeContactPhone(values.contactPhone) === null) {
+    errors.contactPhone =
+      "Enter a valid phone number with country code, e.g. +234 803 123 4567.";
+  } else if (normalizeContactPhone(values.contactPhone)!.length > limits.contactPhone) {
+    errors.contactPhone = "That phone number is too long.";
+  }
+
+  if (Object.keys(errors).length > 0) {
+    return { ok: false, errors, values };
+  }
+
+  // Every field above has passed, so the casts below are safe by check.
+  const type = values.type as InstitutionType;
+  const contactPhone = normalizeContactPhone(values.contactPhone);
+  if (contactPhone === null) {
+    // Unreachable (validated above) but keeps the return total without an assert.
+    return { ok: false, errors: { contactPhone: "Enter a valid phone number." }, values };
+  }
+
+  return {
+    ok: true,
+    value: {
+      name: values.name,
+      type,
+      shortName: values.shortName.length > 0 ? values.shortName : null,
+      description: values.description.length > 0 ? values.description : null,
+      country: values.country,
+      state: values.state,
+      city: values.city,
+      address: values.address,
+      contactPerson: values.contactPerson,
+      contactEmail: values.contactEmail.toLowerCase(),
+      contactPhone,
+    },
+  };
+}
+
+// --- Institution self-service profile update (Settings › General) -----------
+// The Institution Admin's own "General" settings edit (prompt: navigation &
+// route-ownership repair). It reuses the SAME field set and length bounds as
+// registration above, because they map to the same migration-0015 columns —
+// there is deliberately no second copy of the limits to drift.
+//
+// Why the rules differ from registration: registration is a SUPER_ADMIN
+// onboarding step where every identity/contact field is mandatory so a new
+// tenant always has a complete directory record. Self-service editing targets
+// EXISTING tenants, many of which predate 0015 (legacy rows carry `null` for
+// the whole profile). Forcing an admin to fill every field just to correct the
+// name would be dishonest about what the schema requires, so here ONLY `name`
+// is required (it is `NOT NULL` in 0001); every other field is optional and a
+// blank stays `null` rather than being coerced to an empty string. Fields that
+// DO carry a database CHECK (email/phone format, per-field max length) are
+// validated whenever a value is supplied, so the write can never land an
+// out-of-range or malformed value the database would refuse.
+
+/** The editable identity/contact fields — same keys as the profile columns. */
+export type InstitutionProfileField = InstitutionRegistrationField;
+
+/** The validated, normalised payload the data layer writes (blank → null). */
+export type CleanInstitutionProfileUpdate = {
+  name: string;
+  type: InstitutionType | null;
+  shortName: string | null;
+  description: string | null;
+  country: string | null;
+  state: string | null;
+  city: string | null;
+  address: string | null;
+  contactPerson: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+};
+
+export type InstitutionProfileUpdateResult =
+  | { ok: true; value: CleanInstitutionProfileUpdate }
+  | {
+      ok: false;
+      errors: Partial<Record<InstitutionProfileField, string>>;
+      /** The submitted values, trimmed, so the form re-renders what was typed. */
+      values: Record<InstitutionProfileField, string>;
+    };
+
+/** Bound an optional text field: blank → null, over-length → error. */
+function optionalBounded(
+  value: string,
+  max: number,
+  label: string,
+  errors: Partial<Record<InstitutionProfileField, string>>,
+  key: InstitutionProfileField,
+): string | null {
+  if (value.length === 0) return null;
+  if (value.length > max) {
+    errors[key] = `${label} must be ${max} characters or fewer.`;
+    return null;
+  }
+  return value;
+}
+
+/**
+ * Validate raw self-service profile input (FormData-backed — every value is
+ * untrusted). Collects ALL field errors in one pass so the form shows every
+ * problem at once. Fail-closed: a required field is never defaulted, an
+ * unrecognised type is refused rather than guessed, and a supplied email/phone
+ * is only stored once it clears the same checks the schema enforces.
+ */
+export function validateInstitutionProfileUpdate(
+  raw: Record<string, unknown>,
+): InstitutionProfileUpdateResult {
+  const values: Record<InstitutionProfileField, string> = {
+    name: rawField(raw.name),
+    type: rawField(raw.type),
+    shortName: rawField(raw.shortName),
+    description: rawField(raw.description),
+    country: rawField(raw.country),
+    state: rawField(raw.state),
+    city: rawField(raw.city),
+    address: rawField(raw.address),
+    contactPerson: rawField(raw.contactPerson),
+    contactEmail: rawField(raw.contactEmail),
+    contactPhone: rawField(raw.contactPhone),
+  };
+
+  const errors: Partial<Record<InstitutionProfileField, string>> = {};
+  const limits = INSTITUTION_REGISTRATION_LIMITS;
+
+  // Name is the one NOT NULL identity column (migration 0001) — always
+  // required, always bounded.
+  if (values.name.length === 0) {
+    errors.name = "Institution name is required.";
+  } else if (values.name.length > limits.name) {
+    errors.name = `Institution name must be ${limits.name} characters or fewer.`;
+  }
+
+  // Institution type is optional here (legacy rows may have none). When a value
+  // IS supplied it must be one of the controlled vocabularies — never guessed.
+  let type: InstitutionType | null = null;
+  if (values.type.length > 0) {
+    if (isInstitutionType(values.type)) {
+      type = values.type;
+    } else {
+      errors.type = "That institution type is not supported.";
+    }
+  }
+
+  // Optional bounded text fields — blank stays null, never an empty string.
+  const shortName = optionalBounded(values.shortName, limits.shortName, "Short name", errors, "shortName");
+  const description = optionalBounded(values.description, limits.description, "Description", errors, "description");
+  const country = optionalBounded(values.country, limits.country, "Country", errors, "country");
+  const state = optionalBounded(values.state, limits.state, "State", errors, "state");
+  const city = optionalBounded(values.city, limits.city, "City", errors, "city");
+  const address = optionalBounded(values.address, limits.address, "Full address", errors, "address");
+  const contactPerson = optionalBounded(values.contactPerson, limits.contactPerson, "Contact person", errors, "contactPerson");
+
+  // Contact email: optional, but a supplied value must be well-formed. Stored
+  // lower-cased for the same stable uniqueness as registration; no email is
+  // sent by this flow.
+  let contactEmail: string | null = null;
+  if (values.contactEmail.length > 0) {
+    if (values.contactEmail.length > limits.contactEmail) {
+      errors.contactEmail = `Contact email must be ${limits.contactEmail} characters or fewer.`;
+    } else if (!CONTACT_EMAIL_PATTERN.test(values.contactEmail)) {
+      errors.contactEmail = "Enter a valid email address, e.g. admin@school.edu.ng.";
+    } else {
+      contactEmail = values.contactEmail.toLowerCase();
+    }
+  }
+
+  // Contact phone: optional, but a supplied value is normalised to `+`/digits
+  // and bounded exactly as the schema CHECK requires.
+  let contactPhone: string | null = null;
+  if (values.contactPhone.length > 0) {
+    const normalized = normalizeContactPhone(values.contactPhone);
+    if (normalized === null) {
+      errors.contactPhone =
+        "Enter a valid phone number with country code, e.g. +234 803 123 4567.";
+    } else if (normalized.length > limits.contactPhone) {
+      errors.contactPhone = "That phone number is too long.";
+    } else {
+      contactPhone = normalized;
+    }
+  }
+
+  if (Object.keys(errors).length > 0) {
+    return { ok: false, errors, values };
+  }
+
+  return {
+    ok: true,
+    value: {
+      name: values.name,
+      type,
+      shortName,
+      description,
+      country,
+      state,
+      city,
+      address,
+      contactPerson,
+      contactEmail,
+      contactPhone,
+    },
+  };
 }

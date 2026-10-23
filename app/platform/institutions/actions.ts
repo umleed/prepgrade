@@ -3,10 +3,16 @@
 import { revalidatePath } from "next/cache";
 import { inspectAccess } from "@/lib/auth/guards";
 import { recordPlatformAudit } from "@/lib/data/audit";
-import { setInstitutionStatus } from "@/lib/data/platform-overview";
+import {
+  createPlatformInstitution,
+  setInstitutionStatus,
+} from "@/lib/data/platform-overview";
 import {
   INSTITUTION_STATUS_LABELS,
+  INSTITUTION_TYPE_LABELS,
   isInstitutionStatus,
+  validateInstitutionRegistration,
+  type InstitutionRegistrationField,
   type InstitutionStatus,
 } from "@/lib/institutions";
 
@@ -157,6 +163,176 @@ export async function setInstitutionStatusAction(
       : {
           warning:
             "The status was changed, but its audit record could not be saved. Please note the change manually and report this to platform operations.",
+        }),
+  };
+}
+
+// --- Institution registration ("Add Institution") --------------------------
+
+/** Fields the form re-renders after a rejected submission. */
+export type InstitutionRegistrationValues = Record<
+  InstitutionRegistrationField,
+  string
+>;
+
+/**
+ * Progressive state for the registration form (`useActionState`). `null` is
+ * the untouched form; every other variant carries exactly what the form needs
+ * to re-render honestly — field errors + submitted values, a top-level
+ * message, or the created institution for the success panel.
+ */
+export type InstitutionRegistrationState = {
+  /** Per-field validation messages (same contract as the pure validator). */
+  errors?: Partial<Record<InstitutionRegistrationField, string>>;
+  /** The submitted values, so a rejected submission is never lost. */
+  values?: InstitutionRegistrationValues;
+  /** Top-level failure (authorisation, duplicate, storage error). */
+  message?: string;
+  /** Success: the created tenant, for the confirmation panel + links. */
+  created?: { id: string; name: string };
+  /** Set when the row exists but its audit record could not be written. */
+  warning?: string;
+} | null;
+
+/** Read the registration fields out of FormData as raw strings. */
+function registrationValues(form: FormData): InstitutionRegistrationValues {
+  const text = (key: InstitutionRegistrationField): string => {
+    const value = form.get(key);
+    return typeof value === "string" ? value : "";
+  };
+  return {
+    name: text("name"),
+    type: text("type"),
+    shortName: text("shortName"),
+    description: text("description"),
+    country: text("country"),
+    state: text("state"),
+    city: text("city"),
+    address: text("address"),
+    contactPerson: text("contactPerson"),
+    contactEmail: text("contactEmail"),
+    contactPhone: text("contactPhone"),
+  };
+}
+
+/**
+ * Register a new institution from the platform area — the sensitive tenant
+ * creation write.
+ *
+ * Enforcement order (AGENTS.md §5, §7), mirroring the status-change action:
+ *   1. Validate every field through the pure contract BEFORE any privileged
+ *      work; a malformed submission never reaches the database or the audit
+ *      log, and the operator sees all field errors at once.
+ *   2. Re-check SUPER_ADMIN from the trusted session for THIS request — the
+ *      page guard is convenience, this is enforcement. A denied attempt is
+ *      audited (`institution.created`, outcome denied) with no target id, and
+ *      the response does not confirm anything about the would-be tenant.
+ *   3. Create through the data layer, which enforces duplicate prevention via
+ *      the pre-check AND the 0015 unique index (race-safe). Duplicates and
+ *      errors are audited as failed; nothing is half-created — the insert is
+ *      a single statement, so the tenant either exists or does not.
+ *   4. Audit the success (best-effort, same contract as the status action:
+ *      a missing audit record is surfaced as a warning, never silent), then
+ *      revalidate the directory. The form shows a success panel with links;
+ *      no privileged user, membership, or email is created or sent here —
+ *      those depend on workflows that do not exist yet.
+ *
+ * The audit detail carries only the controlled-vocabulary type — never the
+ * free-text name or contact values (lib/audit/platform.ts privacy contract).
+ */
+export async function createInstitutionAction(
+  _previous: InstitutionRegistrationState,
+  form: FormData,
+): Promise<InstitutionRegistrationState> {
+  const values = registrationValues(form);
+
+  // 1. Pure validation first (fail closed, all errors at once).
+  const validated = validateInstitutionRegistration(values);
+  if (!validated.ok) {
+    return { errors: validated.errors, values: validated.values };
+  }
+
+  // 2. Authoritative SUPER_ADMIN check for THIS request.
+  const decision = await inspectAccess({ roles: ["SUPER_ADMIN"] });
+  if (!decision.allowed) {
+    await recordPlatformAudit({
+      actorId: decision.principal?.userId ?? null,
+      actorRole: decision.principal?.role ?? null,
+      action: "institution.created",
+      targetType: "institution",
+      targetId: null,
+      outcome: "denied",
+      detail: "attempted institution registration",
+    });
+    return {
+      message: "You are not authorised to register institutions.",
+      values,
+    };
+  }
+  const actor = decision.principal;
+
+  // 3. Create (duplicate-safe at both layers, see the data function).
+  let result;
+  try {
+    result = await createPlatformInstitution(validated.value);
+  } catch {
+    await recordPlatformAudit({
+      actorId: actor.userId,
+      actorRole: actor.role,
+      action: "institution.created",
+      targetType: "institution",
+      targetId: null,
+      outcome: "failed",
+      detail: "registration errored before the tenant was created",
+    });
+    return {
+      message:
+        "The institution could not be created right now. Nothing was saved — please try again.",
+      values,
+    };
+  }
+
+  if (!result.ok) {
+    // duplicateName — the friendly pre-check or the DB constraint refused the
+    // second tenant with the same normalised name. Nothing was created.
+    await recordPlatformAudit({
+      actorId: actor.userId,
+      actorRole: actor.role,
+      action: "institution.created",
+      targetType: "institution",
+      targetId: null,
+      outcome: "failed",
+      detail: "duplicate institution name refused",
+    });
+    return {
+      message:
+        "An institution with this name already exists, so no duplicate was created. Search the directory to confirm before registering again.",
+      errors: { name: "That institution name is already taken." },
+      values,
+    };
+  }
+
+  // 4. Applied — audit the creation (best-effort; a missing audit record is
+  // surfaced as a warning, matching the status-change contract), refresh the
+  // directory, and hand the form a success state.
+  const audited = await recordPlatformAudit({
+    actorId: actor.userId,
+    actorRole: actor.role,
+    action: "institution.created",
+    targetType: "institution",
+    targetId: result.id,
+    outcome: "success",
+    detail: `registered as ${INSTITUTION_TYPE_LABELS[validated.value.type]}`,
+  });
+
+  revalidatePath("/platform/institutions");
+  return {
+    created: { id: result.id, name: validated.value.name },
+    ...(audited
+      ? {}
+      : {
+          warning:
+            "The institution was created, but its audit record could not be saved. Please note the registration manually and report this to platform operations.",
         }),
   };
 }

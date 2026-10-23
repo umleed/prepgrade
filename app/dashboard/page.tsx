@@ -92,10 +92,10 @@ export default async function DashboardPage({
 
   // Single source of truth for post-login destinations. Roles with dedicated
   // workspaces (INSTITUTION_ADMIN → /institution, prompt 10; STUDENT →
-  // /student, prompt 20; SUPER_ADMIN → /platform, prompt 31) are redirected
-  // there. TEACHER still resolves to this page until the teacher dashboard
-  // ships (prompt 26). The map lives in `lib/auth/roles.ts` and no call site
-  // changes as they ship.
+  // /student, prompt 20; SUPER_ADMIN → /platform, prompt 31; TEACHER →
+  // /teacher, prompt 26) are redirected there. Only an unassigned role resolves
+  // to this page. The map lives in `lib/auth/roles.ts` and no call site changes
+  // as they ship.
   const home = roleHomePath(role);
   if (home !== DASHBOARD_PATH) {
     redirect(home);
@@ -198,11 +198,11 @@ export default async function DashboardPage({
 
           <Alert variant="info" title="What happens next">
             Institution management (prompt 10), platform administration
-            (prompt 31), and the student workspace (prompt 20) are live —
-            those roles now go straight to their own area after sign-in. The
-            teacher dashboard (prompt 26) is built in its own phase; until it
-            ships, teachers stay on this page. No link to an unbuilt area is
-            shown here. {" "}
+            (prompt 31), the student workspace (prompt 20), and the teacher
+            dashboard (prompt 26) are all live — those roles now go straight to
+            their own area after sign-in. This page remains the landing state
+            for accounts that are signed in but not yet assigned to a workspace.
+            {" "}
             <Link href="/onboarding" className="font-medium underline">
               Review institution setup
             </Link>

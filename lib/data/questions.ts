@@ -39,6 +39,7 @@ import {
   type QuestionListQuery,
   type QuestionStatus,
 } from "@/lib/questions";
+import { questionDedupeKey } from "@/lib/question-import";
 import {
   subjectIsSelectable,
   topicIsSelectable,
@@ -567,6 +568,86 @@ export async function createQuestion(
 
   if (error) throw error;
   return { ok: true, id: (data as { id: string }).id };
+}
+
+/**
+ * Case/space-insensitive keys of this tenant's ACTIVE question texts, used by
+ * the import flow (prompt 34) to skip rows that already exist rather than
+ * re-import them. Only THIS institution's rows are read, so one tenant never
+ * sees — or is deduplicated against — another's content (AGENTS.md §5).
+ */
+export async function getActiveQuestionKeys(institutionId: string): Promise<Set<string>> {
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from("questions")
+    .select("question_text")
+    .eq("institution_id", institutionId)
+    .eq("status", "active");
+
+  if (error) throw error;
+  return new Set(
+    (data ?? [])
+      .map((row) => questionDedupeKey((row.question_text as string) ?? ""))
+      .filter((key) => key !== ""),
+  );
+}
+
+/** One imported row's fate, reported back for the success/skipped summary. */
+export type ImportOutcomeRow = { line: number; reason: string };
+
+export type ImportResult = {
+  imported: number;
+  skipped: ImportOutcomeRow[];
+};
+
+/**
+ * Write a batch of already-resolved question payloads for ONE tenant
+ * (prompt 34). Each row goes through the SAME `createQuestion` path the author
+ * form uses — so normalisation, structural rules, the subject/topic/category
+ * visibility re-check, and the trusted tenant/author ids are applied per row
+ * with no duplicated logic. The caller (a server action) supplies `input`s
+ * whose subject/topic/category ids it resolved from the tenant's OWN
+ * catalogue; nothing here trusts a client-supplied id or institution.
+ *
+ * A row that fails validation, does not resolve under this tenant, or
+ * duplicates a question already imported in THIS run is skipped and reported
+ * rather than aborting the whole batch — the preview already gave the user the
+ * chance to fix rows, and a partial import beats a lost one.
+ */
+export async function importQuestions(
+  institutionId: string,
+  userId: string,
+  rows: { line: number; input: QuestionInput }[],
+  existingKeys: Set<string>,
+): Promise<ImportResult> {
+  const seen = new Set(existingKeys);
+  let imported = 0;
+  const skipped: ImportOutcomeRow[] = [];
+
+  for (const row of rows) {
+    const clean = normalizeQuestionInput(row.input);
+    const key = questionDedupeKey(clean.questionText);
+
+    if (key && seen.has(key)) {
+      skipped.push({ line: row.line, reason: "A question with this text already exists." });
+      continue;
+    }
+
+    const result = await createQuestion(institutionId, userId, row.input);
+    if (result.ok) {
+      imported += 1;
+      if (key) seen.add(key);
+      continue;
+    }
+
+    const messages = Object.values(result.errors).filter(Boolean);
+    skipped.push({
+      line: row.line,
+      reason: messages[0] ?? "This row could not be saved.",
+    });
+  }
+
+  return { imported, skipped };
 }
 
 /**

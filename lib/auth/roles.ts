@@ -62,14 +62,14 @@ export function normalizeUserRole(value: unknown): UserRole | null {
  * INSTITUTION_ADMIN now has its dedicated workspace (prompt 10) and is routed
  * straight there. SUPER_ADMIN has the platform operations dashboard (prompt
  * 31). STUDENT has the student dashboard (prompt 20) under /student. TEACHER
- * still lands on `/dashboard`, which renders the shared workspace; when the
- * teacher dashboard ships (prompt 26) its row below becomes the real path and
- * no call site needs to change.
+ * now has its own dashboard (prompt 26) under /teacher. The shared `/dashboard`
+ * route remains the no-membership / denied landing state; no call site needs to
+ * change as these paths resolve, since `roleHomePath` is the single spine.
  */
 export const ROLE_HOME_PATH: Record<UserRole, string> = {
   SUPER_ADMIN: "/platform",
   INSTITUTION_ADMIN: "/institution",
-  TEACHER: "/dashboard",
+  TEACHER: "/teacher",
   STUDENT: "/student",
 };
 

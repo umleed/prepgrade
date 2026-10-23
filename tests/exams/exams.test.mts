@@ -61,6 +61,7 @@ import {
   studentExamBucket,
   studentExamEligibility,
   studentExamStartGate,
+  teacherExamBucket,
   toDatetimeLocalValue,
   validateExam,
   type ExamInput,
@@ -592,6 +593,78 @@ describe("studentExamBucket", () => {
         now,
       }),
       "available",
+    );
+  });
+});
+
+// --- Teacher dashboard buckets (prompt 26) --------------------------------------
+
+describe("teacherExamBucket", () => {
+  const now = new Date("2026-01-10T12:00:00Z");
+
+  it("surfaces drafts and unpublished scheduled exams as work-in-progress", () => {
+    // Unlike a student, a teacher sees what they are still authoring.
+    assert.equal(
+      teacherExamBucket({ status: "draft", startsAt: null, endsAt: null, now }),
+      "draft",
+    );
+    assert.equal(
+      teacherExamBucket({
+        status: "scheduled",
+        startsAt: "2026-01-20T00:00:00Z",
+        endsAt: "2026-01-21T00:00:00Z",
+        now,
+      }),
+      "upcoming",
+    );
+  });
+
+  it("places a published exam by its window on the same clock as delivery", () => {
+    assert.equal(
+      teacherExamBucket({
+        status: "published",
+        startsAt: "2026-01-11T00:00:00Z",
+        endsAt: "2026-01-12T00:00:00Z",
+        now,
+      }),
+      "upcoming",
+    );
+    assert.equal(
+      teacherExamBucket({
+        status: "published",
+        startsAt: "2026-01-09T00:00:00Z",
+        endsAt: "2026-01-11T00:00:00Z",
+        now,
+      }),
+      "active",
+    );
+    assert.equal(
+      teacherExamBucket({
+        status: "published",
+        startsAt: "2026-01-01T00:00:00Z",
+        endsAt: "2026-01-05T00:00:00Z",
+        now,
+      }),
+      "completed",
+    );
+  });
+
+  it("treats a closed exam as completed and hides an archived one", () => {
+    assert.equal(
+      teacherExamBucket({ status: "closed", startsAt: null, endsAt: null, now }),
+      "completed",
+    );
+    // Archived is history the dashboard deliberately does not render.
+    assert.equal(
+      teacherExamBucket({ status: "archived", startsAt: null, endsAt: null, now }),
+      null,
+    );
+  });
+
+  it("falls back to active for a published exam with no window bounds", () => {
+    assert.equal(
+      teacherExamBucket({ status: "published", startsAt: null, endsAt: null, now }),
+      "active",
     );
   });
 });

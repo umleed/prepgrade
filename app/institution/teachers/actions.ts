@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth/guards";
+import { trackProductAnalytics } from "@/lib/product-analytics/server";
 import {
   ProvisioningUnavailableError,
   findUserByEmail,
@@ -11,6 +12,7 @@ import {
 } from "@/lib/auth/provisioning";
 import { validateTeacher, type TeacherErrors, type TeacherInput } from "@/lib/teachers";
 import { DataSourceUnavailableError } from "@/lib/supabase/server";
+import { recordPlatformAudit } from "@/lib/data/audit";
 import {
   createTeacher,
   getTeacher,
@@ -37,6 +39,32 @@ export type TeacherActionResult =
 function fieldErrorsFor(input: TeacherInput): TeacherErrors | null {
   const errors = validateTeacher(input);
   return Object.keys(errors).length > 0 ? errors : null;
+}
+
+/**
+ * Audit a teacher membership/role change (prompt 33: sensitive actions are
+ * recorded where the audit model supports them). Best-effort and non-throwing
+ * like every audit write. The target is the CALLER'S OWN TENANT (resolved
+ * from the session, never the payload) so the platform audit log is filterable
+ * per institution; the detail carries the roster-row id reference and the
+ * transition only — no name, no email (AGENTS.md §7).
+ */
+async function auditTeacherAccess(
+  principal: Awaited<ReturnType<typeof requireRole>>,
+  action: "membership.teacher_access_changed" | "membership.teacher_access_revoked",
+  teacherId: string,
+  outcome: "success" | "failed",
+  summary: string,
+): Promise<void> {
+  await recordPlatformAudit({
+    actorId: principal.userId,
+    actorRole: principal.role,
+    action,
+    targetType: "institution",
+    targetId: principal.institutionId as string,
+    outcome,
+    detail: `Teacher roster row ${teacherId}: ${summary}`,
+  });
 }
 
 /** True when the failure means the Clerk/Supabase secrets are not configured. */
@@ -81,6 +109,15 @@ export async function createTeacherAction(
   const result = await createTeacher(institutionId, input);
   if (!result.ok) return { ok: false, errors: result.errors };
 
+  // Product analytics (prompt 36): the invitation moment is the committed
+  // `invited` roster row — it counts even if Clerk delivery below fails, and
+  // fires exactly once per create. Email/full name never travel (AGENTS.md §7).
+  await trackProductAnalytics(
+    "teacher_invited",
+    { teacherId: result.id, role: principal.role },
+    { institutionId },
+  );
+
   const id = result.id;
   let notice: string | undefined;
 
@@ -91,6 +128,13 @@ export async function createTeacherAction(
       await grantTeacherRole(account.userId, institutionId);
       await linkTeacherAccount(institutionId, id, account.userId, email, input.fullName.trim());
       notice = "An account already exists for this email — teacher access was granted.";
+      await auditTeacherAccess(
+        principal,
+        "membership.teacher_access_changed",
+        id,
+        "success",
+        "granted on invite for an existing account",
+      );
     } else {
       const sent = await sendTeacherInvitationEmail(email);
       notice = sent
@@ -106,6 +150,14 @@ export async function createTeacherAction(
       ? "Clerk server keys are not configured on the server"
       : "the invitation could not be sent right now";
     notice = `The teacher was added to the roster, but ${reason}. Use Activate access on the profile to retry.`;
+    // A refused GRANT attempt is still a sensitive event — record the failure.
+    await auditTeacherAccess(
+      principal,
+      "membership.teacher_access_changed",
+      id,
+      "failed",
+      "grant attempt did not complete",
+    );
   }
 
   revalidateTeacherPaths(id);
@@ -202,6 +254,13 @@ export async function activateTeacherAction(
       teacher.fullName,
     );
     if (!linked) {
+      await auditTeacherAccess(
+        principal,
+        "membership.teacher_access_changed",
+        id,
+        "failed",
+        "grant refused (conflicting membership)",
+      );
       return {
         ok: false,
         errors: {},
@@ -218,6 +277,17 @@ export async function activateTeacherAction(
           "Teacher access could not be granted because Clerk server keys are not configured on the server.",
       };
     }
+    // Any Clerk failure here is a refused or failed trusted-role WRITE —
+    // exactly the security-relevant case prompt 33 asks to record. (The
+    // "no account yet" refusal above is a normal not-ready state, not an
+    // audit event.)
+    await auditTeacherAccess(
+      principal,
+      "membership.teacher_access_changed",
+      id,
+      "failed",
+      "grant refused by the auth provider",
+    );
     return {
       ok: false,
       errors: {},
@@ -228,6 +298,13 @@ export async function activateTeacherAction(
     };
   }
 
+  await auditTeacherAccess(
+    principal,
+    "membership.teacher_access_changed",
+    id,
+    "success",
+    `access granted (was \`${teacher.status}\`)`,
+  );
   revalidateTeacherPaths(id);
   return { ok: true, id, notice: "Teacher access granted." };
 }
@@ -263,15 +340,30 @@ export async function deactivateTeacherAction(
   }
 
   let notice: string | undefined;
+  let revokeFailed = false;
   if (teacher.profileId) {
     try {
       await revokeTeacherRole(teacher.profileId);
     } catch (error) {
       if (!isUnconfigured(error)) throw error;
+      revokeFailed = true;
       notice =
         "Access was deactivated in PrepGrade's records, but the sign-in role could not be revoked because Clerk server keys are not configured.";
     }
   }
+
+  // The revocation itself is the sensitive membership change; record whether
+  // the trusted role actually came off (success) or only the DB side did
+  // (failed) — an incomplete revoke is visible to the platform.
+  await auditTeacherAccess(
+    principal,
+    "membership.teacher_access_revoked",
+    id,
+    revokeFailed ? "failed" : "success",
+    revokeFailed
+      ? "access revoked in app records; auth-provider role not yet revoked"
+      : `access revoked (was \`${teacher.status}\`)`,
+  );
 
   revalidateTeacherPaths(id);
   return { ok: true, id, notice };

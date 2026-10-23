@@ -3,7 +3,10 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { getAuthContext } from "@/lib/auth/context";
 import { requireRole } from "@/lib/auth/guards";
+import { institutionDisplayText } from "@/lib/auth/institution-identity";
+import { getInstitutionIdentity } from "@/lib/data/institution-identity";
 import { countTeachersByStatus } from "@/lib/data/teachers";
+import { INSTITUTION_SETTINGS_PATH } from "@/lib/navigation/institution-nav";
 import { Badge, Button, Card, EmptyState } from "@/components/ui";
 
 export const metadata: Metadata = {
@@ -101,7 +104,17 @@ export default async function InstitutionDashboardPage() {
   });
 
   const context = await getAuthContext();
-  const greeting = context.displayName || context.email || "there";
+  const adminName = context.displayName || context.email || "there";
+
+  // The institution's real name, read from the trusted `institutions` record
+  // (same resolution the sidebar shell uses). Never the tenant UUID.
+  const identity = await getInstitutionIdentity({
+    userId: principal.userId,
+    institutionId: principal.institutionId,
+  });
+  const institutionName = institutionDisplayText(
+    identity.status === "resolved" ? identity.name : null,
+  );
 
   // Total Teachers is real once the teacher migration (prompt 12) is applied;
   // an unavailable data source stays "—" rather than showing an invented
@@ -122,12 +135,15 @@ export default async function InstitutionDashboardPage() {
     <>
       {/* Top bar */}
       <header className="flex shrink-0 items-center justify-between gap-4 border-b border-border bg-surface px-6 py-4">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight text-ink">
             Institution Dashboard
           </h1>
           <p className="text-sm text-ink-muted">
-            Welcome back, {greeting}.
+            Welcome back, {adminName}.
+          </p>
+          <p className="truncate text-sm font-medium text-ink" title={institutionName}>
+            {institutionName}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -197,7 +213,7 @@ export default async function InstitutionDashboardPage() {
               <ActionTile
                 label="Exams"
                 description="Create, schedule, and assign assessments."
-                href={null}
+                href="/institution/exams"
               />
               <ActionTile
                 label="Results"
@@ -207,7 +223,7 @@ export default async function InstitutionDashboardPage() {
               <ActionTile
                 label="Analytics"
                 description="Track class and institution-wide trends."
-                href={null}
+                href="/institution/analytics"
               />
             </div>
           </section>
@@ -228,7 +244,7 @@ export default async function InstitutionDashboardPage() {
                   </>
                 }
                 action={
-                  <Link href="/onboarding">
+                  <Link href={INSTITUTION_SETTINGS_PATH}>
                     <Button type="button" variant="secondary" size="sm">
                       Review institution setup
                     </Button>
@@ -254,11 +270,11 @@ export default async function InstitutionDashboardPage() {
             </Card>
           </section>
 
-          {/* Tenant-scope note: explains how data will be bounded, truthfully. */}
+          {/* Tenant-scope note: explains how data is bounded, truthfully,
+              without exposing the internal tenant id in user-facing UI. */}
           <p className="text-xs leading-5 text-ink-subtle">
-            Signed in as the administrator of institution{" "}
-            <span className="font-mono break-all">{principal.institutionId}</span>.
-            Every figure and list on this page is scoped to this institution.
+            Signed in as the administrator of {institutionName}. Every figure
+            and list on this page is scoped to this institution.
           </p>
         </div>
       </main>

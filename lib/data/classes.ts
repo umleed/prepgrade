@@ -842,3 +842,46 @@ export async function listAssignedClassIdsForTeacher(
 
   return (ownClasses ?? []).map((row) => row.id as string);
 }
+
+/**
+ * Active classes within a teacher's scope, each with its live student count,
+ * name-ordered — the teacher dashboard's class overview (prompt 26).
+ *
+ * The caller passes the class ids already resolved from the trusted session
+ * (`listAssignedClassIdsForTeacher`), never a client-supplied list. Every row
+ * is re-filtered by `institution_id` here too, so a foreign class id can never
+ * widen the read into another tenant (AGENTS.md §5). An empty input returns an
+ * empty list without querying.
+ */
+export async function listClassesByIdsWithStudentCounts(
+  institutionId: string,
+  classIds: string[],
+): Promise<{ id: string; name: string; studentCount: number }[]> {
+  const uniqueIds = [...new Set(classIds)];
+  if (uniqueIds.length === 0) return [];
+
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from("classes")
+    .select("id, name")
+    .eq("institution_id", institutionId)
+    .eq("status", "active")
+    .in("id", uniqueIds)
+    .order("name", { ascending: true });
+  if (error) throw error;
+
+  const rows = (data ?? []).map((row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    studentCount: 0,
+  }));
+
+  const counts = await studentCountsForClasses(
+    institutionId,
+    rows.map((row) => row.id),
+  );
+  for (const row of rows) {
+    row.studentCount = counts.get(row.id) ?? 0;
+  }
+  return rows;
+}

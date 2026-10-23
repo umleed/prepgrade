@@ -15,6 +15,10 @@ import {
   listPlatformAuditEntries,
   type PlatformAuditEntry,
 } from "@/lib/data/audit";
+import {
+  getSystemHealth,
+  type SystemHealth,
+} from "@/lib/data/platform-health";
 import { DataSourceUnavailableError } from "@/lib/supabase/server";
 import { institutionTypeLabel } from "@/lib/institutions";
 import {
@@ -65,9 +69,9 @@ const ROLE_COLORS: Partial<Record<UserRole, string>> = {
  * figure comes from a live count against tables that exist today
  * (institutions, profiles, institution_memberships, questions); the chart
  * panels whose data sources do not exist yet (time-series usage, revenue,
- * subscription plans, service health) render explicit "not yet available"
- * notes instead of invented numbers, and the Recent Activity feed shows real
- * platform-audit events only.
+ * subscription plans) render explicit "not yet available" notes instead of
+ * invented numbers, the Recent Activity feed shows real platform-audit events
+ * only, and the System Health panel summarises the prompt-33 probes.
  */
 export default async function PlatformDashboardPage() {
   await connection();
@@ -101,6 +105,15 @@ export default async function PlatformDashboardPage() {
     recentActivity = audit.rows;
   } catch {
     recentActivity = null;
+  }
+
+  // System-health summary (prompt 33): the same probes the dedicated screen
+  // runs, degraded independently so a failed check never blanks the dashboard.
+  let health: SystemHealth | null = null;
+  try {
+    health = await getSystemHealth();
+  } catch {
+    health = null;
   }
 
   const asOf = new Date().toLocaleDateString("en-GB", {
@@ -362,12 +375,54 @@ export default async function PlatformDashboardPage() {
               <SectionHeading
                 title="System Health"
                 description="Platform services status."
+                viewAllHref="/platform/health"
+                viewAllLabel="All checks"
               />
-              <PanelNote>
-                Service-health monitoring ships with the observability phase
-                (prompt 33). Until real checks exist there is no status to
-                display.
-              </PanelNote>
+              {health ? (
+                <ul className="flex flex-col gap-2 text-sm">
+                  <HealthRow
+                    label="Server data connection"
+                    ok={health.dataSource.state === "available"}
+                    okNote="Reachable"
+                    failNote="Unreachable — checks could not run"
+                  />
+                  <HealthRow
+                    label="Audit log (append-only)"
+                    ok={health.auditLog.state === "available"}
+                    okNote={
+                      health.latestAuditEvent.state === "live"
+                        ? "Readable and recording events"
+                        : health.latestAuditEvent.state === "empty"
+                          ? "Readable — no events recorded yet"
+                          : "Readable"
+                    }
+                    failNote={
+                      health.auditLog.state === "unavailable" &&
+                      health.auditLog.reason === "missing_table"
+                        ? "Table not migrated in this environment"
+                        : "Could not be read"
+                    }
+                  />
+                  <HealthRow
+                    label="Denied actions (24h)"
+                    ok={
+                      health.deniedLast24h.state === "available" &&
+                      health.deniedLast24h.value === 0
+                    }
+                    okNote="None recorded"
+                    failNote={
+                      health.deniedLast24h.state === "available"
+                        ? `${health.deniedLast24h.value.toLocaleString()} recorded — review the audit log`
+                        : "Window unknown — the audit table could not be read"
+                    }
+                  />
+                </ul>
+              ) : (
+                <PanelNote>
+                  The health probes could not run in this request. The dedicated
+                  checks remain available on the System Health screen.
+                </PanelNote>
+              )}
             </div>
           </Card>
         </section>
@@ -432,5 +487,29 @@ function RoleDonut({ distribution }: { distribution: RoleCount[] }) {
         ))}
       </ul>
     </div>
+  );
+}
+
+/** One measured health line for the dashboard summary (prompt 33). `ok` is
+ *  the honest check result — a failing/unavailable check never renders as a
+ *  green row, and the note says what is actually true. */
+function HealthRow({
+  label,
+  ok,
+  okNote,
+  failNote,
+}: {
+  label: string;
+  ok: boolean;
+  okNote: string;
+  failNote: string;
+}) {
+  return (
+    <li className="flex items-start justify-between gap-3">
+      <span className="text-ink">{label}</span>
+      <Badge tone={ok ? "success" : "warning"} dot>
+        {ok ? okNote : failNote}
+      </Badge>
+    </li>
   );
 }

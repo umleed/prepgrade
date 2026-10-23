@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth/guards";
+import { trackProductAnalytics } from "@/lib/product-analytics/server";
 import {
   validateStudent,
   type StudentInput,
@@ -47,6 +48,15 @@ export async function createStudentAction(
 
   const result = await createStudent(principal.institutionId as string, input);
   if (!result.ok) return { ok: false, errors: result.errors };
+
+  // Product analytics (prompt 36): the roster-addition moment, once per
+  // committed row. Ids and the trusted actor role only — the student's NAME
+  // never travels (AGENTS.md §7, privacy minimisation).
+  await trackProductAnalytics(
+    "student_added",
+    { studentId: result.id, classId: input.classId || null, role: principal.role },
+    { institutionId: principal.institutionId as string },
+  );
 
   revalidatePath("/institution/students");
   revalidatePath(`/institution/students/${result.id}`);

@@ -19,6 +19,7 @@ import { createAdminClient } from "@/lib/supabase/server";
 import {
   buildAuditEntry,
   institutionActivityFilter,
+  applicationActivityFilter,
   isPlatformAuditAction,
   type AuditEventInput,
   type PlatformAuditAction,
@@ -37,6 +38,7 @@ type AuditRow = {
   outcome: string;
   detail: unknown;
 };
+export type { AuditRow };
 
 /** An audit entry as the UI reads it (row mapped, values guarded). */
 export type PlatformAuditEntry = {
@@ -75,7 +77,9 @@ function toOutcome(value: string): PlatformAuditOutcome {
     : "failed";
 }
 
-function toEntry(row: AuditRow): PlatformAuditEntry {
+/** Row → UI entry mapping; shared with the usage/activity reads so every
+ *  screen guards the stored values the same way (exported for reuse). */
+export function toEntry(row: AuditRow): PlatformAuditEntry {
   // detail is jsonb written only by buildAuditEntry — read the summary key
   // defensively; a malformed value becomes null, never rendered raw.
   const detail = row.detail;
@@ -97,7 +101,7 @@ function toEntry(row: AuditRow): PlatformAuditEntry {
   };
 }
 
-const AUDIT_SELECT =
+export const AUDIT_SELECT =
   "id, created_at, actor_id, actor_role, action, target_type, target_id, outcome, detail";
 
 /**
@@ -135,6 +139,20 @@ export type PlatformAuditListQuery = {
   pageSize: number;
   /** Optional action filter; unknown names are ignored (fail open to "all"). */
   action?: PlatformAuditAction | null;
+  /** Outcome filter — only the three stored values ever reach here. */
+  outcome?: PlatformAuditOutcome | null;
+  /** Exact actor id (trimmed server-side by the pure resolver). */
+  actor?: string | null;
+  /** Institution id — matches rows TARGETED at this tenant. Deliberately
+   *  narrow: the audit table has no tenant column, and inventing a broader
+   *  tenant attribution would be a leakage risk, not a feature. */
+  institutionId?: string | null;
+  /** Entity (`target_type`) filter from the controlled vocabulary. */
+  entityType?: string | null;
+  /** Inclusive ISO lower bound on created_at. */
+  from?: string | null;
+  /** ISO upper bound on created_at (end of the selected day). */
+  to?: string | null;
 };
 
 export type PlatformAuditListResult = {
@@ -157,9 +175,28 @@ export async function listPlatformAuditEntries(
     .from("platform_audit_log")
     .select(AUDIT_SELECT, { count: "exact" });
 
+  // Every filter is an equality/range on a real column, fed only by values
+  // the PURE resolver already validated and bounded — an unrecognised URL
+  // value never reaches this layer as a column filter.
   if (query.action && isPlatformAuditAction(query.action)) {
     builder = builder.eq("action", query.action);
   }
+  if (query.outcome) builder = builder.eq("outcome", query.outcome);
+  if (query.actor) builder = builder.eq("actor_id", query.actor);
+  if (query.institutionId) {
+    builder = builder
+      .eq("target_type", "institution")
+      .eq("target_id", query.institutionId);
+  } else if (query.entityType !== null && query.entityType !== undefined) {
+    // "none" is the pure layer's sentinel for rows with no recorded target.
+    if (query.entityType === "none") {
+      builder = builder.is("target_type", null);
+    } else {
+      builder = builder.eq("target_type", query.entityType);
+    }
+  }
+  if (query.from) builder = builder.gte("created_at", query.from);
+  if (query.to) builder = builder.lte("created_at", query.to);
 
   const from = (query.page - 1) * query.pageSize;
   const to = from + query.pageSize - 1;
@@ -191,6 +228,34 @@ export async function listInstitutionAuditActivity(
   limit?: number,
 ): Promise<PlatformAuditEntry[]> {
   const filter = institutionActivityFilter(institutionId, limit);
+  if (!filter) return [];
+
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from("platform_audit_log")
+    .select(AUDIT_SELECT)
+    .eq("target_type", filter.target_type)
+    .eq("target_id", filter.target_id)
+    .order("created_at", { ascending: false })
+    .limit(filter.limit);
+
+  if (error) throw error;
+  return (data ?? []).map((row) => toEntry(row as unknown as AuditRow));
+}
+
+/**
+ * Read the most recent platform-audit decisions attributable to ONE institution
+ * application, newest first — the review drawer's decision history. Same
+ * scoping guarantee as the institution activity read: the pure
+ * `applicationActivityFilter` refuses a blank id (returns no rows), so this can
+ * never degrade into a whole-log read. Authorization is the caller's
+ * responsibility: ONLY call after a server-side SUPER_ADMIN check has passed.
+ */
+export async function listApplicationDecisionActivity(
+  applicationId: string,
+  limit?: number,
+): Promise<PlatformAuditEntry[]> {
+  const filter = applicationActivityFilter(applicationId, limit);
   if (!filter) return [];
 
   const supabase = createAdminClient();

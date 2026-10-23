@@ -91,10 +91,17 @@ async function classNamesForTeachers(
   if (teacherIds.length === 0) return result;
 
   const supabase = createAdminClient();
+  // Tenant-scoped on the READ, not only via the write path: `teacher_id`s are
+  // this institution's teachers, but because the service-role client bypasses
+  // RLS the data layer is the only isolation (module header, AGENTS.md §5). The
+  // embedded `classes` filter drops any assignment row whose class is not the
+  // caller's own, so a stale/foreign class id can never surface another
+  // tenant's class name — matching the guarantee stated above.
   const { data, error } = await supabase
     .from("teacher_class_assignments")
     .select("teacher_id, class_id, classes(id, name)")
-    .in("teacher_id", teacherIds);
+    .in("teacher_id", teacherIds)
+    .eq("classes.institution_id", institutionId);
 
   if (error) throw error;
 

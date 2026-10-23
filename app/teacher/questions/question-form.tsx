@@ -65,6 +65,8 @@ export function QuestionForm({
   topics,
   categories,
   initial,
+  afterSaveHref,
+  cancelHref,
 }: {
   mode: "create" | "edit";
   questionId?: string;
@@ -72,6 +74,16 @@ export function QuestionForm({
   topics: TopicOption[];
   categories: CategoryOption[];
   initial?: QuestionInput;
+  /**
+   * Where to send the user after a successful save. Defaults to the shared
+   * question detail (`/teacher/questions/{id}`). The institution-owned create
+   * page passes an `/institution/question-bank` destination so an admin never
+   * leaves the Institution shell to add a question. Must be a plain string —
+   * server components cannot pass functions to this client form.
+   */
+  afterSaveHref?: string;
+  /** Where Cancel returns to. Defaults to the teaching question bank. */
+  cancelHref?: string;
 }) {
   const router = useRouter();
   const [values, setValues] = useState<QuestionInput>(initial ?? QUESTION_INPUT_EMPTY);
@@ -164,7 +176,7 @@ export function QuestionForm({
           : await createQuestionAction(values);
 
       if (result.ok && result.id) {
-        router.push(`/teacher/questions/${result.id}`);
+        router.push(afterSaveHref ?? `/teacher/questions/${result.id}`);
         router.refresh();
         return;
       }
@@ -508,9 +520,10 @@ export function QuestionForm({
           </Button>
           <Link
             href={
-              mode === "edit" && questionId
+              cancelHref ??
+              (mode === "edit" && questionId
                 ? `/teacher/questions/${questionId}`
-                : "/teacher/questions"
+                : "/teacher/questions")
             }
           >
             <Button type="button" variant="secondary" size="md">

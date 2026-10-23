@@ -211,7 +211,10 @@ function IntentBranchCopy({ intent }: { intent: RegistrationIntent }) {
     );
   }
 
-  // Institution registration intents (cbt_centre / school).
+  // Institution registration intents (cbt_centre / school). The real
+  // registration application form is rendered below this panel (see the
+  // onboarding page), so this copy explains the flow without a second, dead
+  // call-to-action.
   const label = intent === "school" ? "school" : "CBT centre";
   return (
     <Card className="overflow-hidden">
@@ -226,22 +229,10 @@ function IntentBranchCopy({ intent }: { intent: RegistrationIntent }) {
           account.
         </p>
         <p className="text-sm leading-6 text-ink-muted">
-          Use the demo-request form to submit your {label}&apos;s details. The
-          PrepGrade team will follow up and provision your institution once the
-          registration is approved.
+          Complete the registration form below to submit your {label}&apos;s
+          details. Its status (pending, or more information requested) appears
+          here as soon as a super admin reviews it.
         </p>
-        <p className="text-xs text-ink-muted">
-          In-app pending-registration status ships with the tenant schema
-          (prompt 08) and the super-admin review queue (prompt 31).
-        </p>
-        <div className="flex flex-wrap gap-3 pt-1">
-          <Link href="/demo-request">
-            <Button type="button" variant="primary" size="sm">
-              Start {label} registration
-              <ArrowRightIcon className="h-4 w-4" />
-            </Button>
-          </Link>
-        </div>
       </div>
     </Card>
   );

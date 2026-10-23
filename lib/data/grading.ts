@@ -25,6 +25,8 @@
 
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/server";
+import { trackProductAnalytics } from "@/lib/product-analytics/server";
+import { createOnceGate } from "@/lib/product-analytics";
 import {
   computeTimeUsedSeconds,
   gradeObjectiveAnswers,
@@ -63,8 +65,14 @@ type ExamReleaseRow = {
 };
 
 type ExistingResultRow = {
+  id: string;
   released_at: string | null;
 };
+
+// Product analytics (prompt 36): `result_generated` marks the FIRST durable
+// result for a sitting. The freshness read plus a bounded once-gate keep
+// idempotent regrades and reconciled retries from duplicating it.
+const resultGeneratedOnce = createOnceGate();
 
 export type GradeAttemptOutcome =
   | { ok: true; released: boolean }
@@ -199,7 +207,7 @@ export async function gradeAttempt(
   // Preserve any prior release stamp (monotonic): a regrade never un-releases.
   const { data: existingData, error: existingError } = await supabase
     .from("exam_results")
-    .select("released_at")
+    .select("id, released_at")
     .eq("attempt_id", attempt.id)
     .eq("institution_id", institutionId)
     .maybeSingle();
@@ -237,10 +245,33 @@ export async function gradeAttempt(
     graded_at: new Date(nowMs).toISOString(),
   };
 
-  const { error: upsertError } = await supabase
+  const { error: upsertError, data: upserted } = await supabase
     .from("exam_results")
-    .upsert(payload, { onConflict: "attempt_id" });
+    .upsert(payload, { onConflict: "attempt_id" })
+    .select("id")
+    .maybeSingle();
   if (upsertError) throw upsertError;
+
+  // Product analytics: the first time a result row exists for this attempt.
+  // A regrade (existing row) or a reconciled retry fires nothing — one
+  // result, one event. Server-derived score only; no answers travel.
+  if (existing === null && upserted) {
+    const resultId = (upserted as { id: string }).id;
+    if (resultGeneratedOnce.claim(resultId)) {
+      await trackProductAnalytics(
+        "result_generated",
+        {
+          examId: attempt.exam_id,
+          attemptId: attempt.id,
+          resultId,
+          percentage: graded.percentage,
+          released,
+          gradedAt: payload.graded_at,
+        },
+        { institutionId },
+      );
+    }
+  }
 
   return { ok: true, released };
 }

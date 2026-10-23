@@ -410,11 +410,18 @@ export default async function QuestionBankPage({
             examinations.
           </p>
         </div>
-        <Link href={`${BANK_BASE}/new`}>
-          <Button type="button" variant="primary" size="sm">
-            Add question
-          </Button>
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link href={`${BANK_BASE}/import`}>
+            <Button type="button" variant="secondary" size="sm">
+              Import
+            </Button>
+          </Link>
+          <Link href={`${BANK_BASE}/new`}>
+            <Button type="button" variant="primary" size="sm">
+              Add question
+            </Button>
+          </Link>
+        </div>
       </header>
 
       <main className="flex-1 overflow-y-auto px-6 py-6">

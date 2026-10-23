@@ -6,6 +6,7 @@ import { requireSuperAdmin } from "@/lib/auth/guards";
 import { roleLabel, type UserRole } from "@/lib/auth/roles";
 import {
   getPlatformInstitutionDetail,
+  type InstitutionProfile,
   type MetricState,
   type RoleCount,
 } from "@/lib/data/platform-overview";
@@ -104,6 +105,19 @@ function DetailField({
       <span className="text-sm font-medium text-ink">{value}</span>
     </div>
   );
+}
+
+/** Profile values render "Not set" when absent — never a guess (0015). */
+function profileText(value: string | null): string {
+  return value && value.trim().length > 0 ? value : "Not set";
+}
+
+/** Country / state / city as one line, skipping unset parts. */
+function profileLocation(profile: InstitutionProfile): string {
+  const parts = [profile.city, profile.state, profile.country].filter(
+    (part): part is string => Boolean(part && part.trim().length > 0),
+  );
+  return parts.length > 0 ? parts.join(", ") : "Not set";
 }
 
 /** Project the role-bucketed membership metric into one role's count. */
@@ -430,6 +444,33 @@ function InstitutionTabs({
                   <DetailField
                     label="Institution ID"
                     value={<span className="font-mono text-xs break-all">{detail.id}</span>}
+                  />
+                  {/* Location & contact block — collected by the platform
+                      registration form (0015). Legacy tenants have none and
+                      honestly show "Not set" per field. */}
+                  <DetailField
+                    label="Short Name"
+                    value={profileText(detail.profile.shortName)}
+                  />
+                  <DetailField
+                    label="Location"
+                    value={profileLocation(detail.profile)}
+                  />
+                  <DetailField
+                    label="Address"
+                    value={profileText(detail.profile.address)}
+                  />
+                  <DetailField
+                    label="Contact Person"
+                    value={profileText(detail.profile.contactPerson)}
+                  />
+                  <DetailField
+                    label="Contact Email"
+                    value={profileText(detail.profile.contactEmail)}
+                  />
+                  <DetailField
+                    label="Contact Phone"
+                    value={profileText(detail.profile.contactPhone)}
                   />
                 </div>
                 <p className="text-xs leading-5 text-ink-subtle">

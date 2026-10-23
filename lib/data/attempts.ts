@@ -32,6 +32,8 @@ import { createAdminClient } from "@/lib/supabase/server";
 import { getStudentExamView } from "@/lib/data/exams";
 import { gradeAttempt } from "@/lib/data/grading";
 import { studentExamStartGate } from "@/lib/exams";
+import { trackProductAnalytics } from "@/lib/product-analytics/server";
+import { createOnceGate } from "@/lib/product-analytics";
 import {
   attemptSubmitDecision,
   buildOptionOrder,
@@ -111,6 +113,16 @@ function toAttemptStatus(value: string): ExamAttemptStatus | null {
     : null;
 }
 
+// --- Product analytics (prompt 36) -------------------------------------------
+// Once-only gates for events whose lifecycle moment has no DB guard that can
+// see every replay (a retried read of an already-terminal attempt, repeated
+// autosaves of the same sitting). The authoritative dedups remain the DB
+// CAS/UPSERT keys; these gates are bounded in-process belts. They fire into
+// the no-op dispatcher today, so nothing is shipped or lost either way.
+
+const answerSavedOnce = createOnceGate();
+const attemptCompletedOnce = createOnceGate();
+
 /** A cryptographically-backed [0,1) source for shuffling, with a safe fallback.
  *  The shuffle order is not a secret (it is stored per attempt), but a
  *  non-deterministic source keeps two students' orders genuinely independent. */
@@ -179,6 +191,25 @@ async function settleExpiry(
     .eq("status", "in_progress");
   if (error) throw error;
   attempt.status = "expired";
+  // Product analytics: an attempt timed out — the sitting ENDED, without an
+  // explicit submit. The CAS above (status eq in_progress) flips the row once,
+  // but settle reads can replay against stale copies, so the gate pins once.
+  if (attemptCompletedOnce.claim(attempt.id)) {
+    const startedMs = new Date(attempt.started_at).getTime();
+    const durationSeconds = Number.isFinite(startedMs)
+      ? Math.max(0, Math.floor((expiresMs - startedMs) / 1000))
+      : null;
+    await trackProductAnalytics(
+      "assessment_completed",
+      {
+        examId: attempt.exam_id,
+        attemptId: attempt.id,
+        submissionMethod: "expired",
+        durationSeconds,
+      },
+      { institutionId: attempt.institution_id },
+    );
+  }
   // The attempt just became terminal — grade it. Best-effort here (this runs
   // on fire-and-forget settle paths too): a grading hiccup must never break an
   // autosave/read, and the result is reconciled idempotently on the next
@@ -470,6 +501,21 @@ export async function startOrResumeAttempt(
     view.exam.durationMinutes,
     Date.now(),
   );
+
+  // Product analytics (prompt 36): a NEW attempt was created — the exam truly
+  // started. Resumes and collision-recovery return earlier, so a refresh or a
+  // second tab never duplicates this event.
+  const startedRow = inserted as AttemptRow;
+  await trackProductAnalytics(
+    "exam_started",
+    {
+      examId: startedRow.exam_id,
+      attemptId: startedRow.id,
+      attemptNumber: startedRow.attempt_number,
+    },
+    { institutionId },
+  );
+
   return { ok: true, state, resumed: false };
 }
 
@@ -524,6 +570,30 @@ export async function getAttemptState(
 }
 
 // --- Answer save -------------------------------------------------------------
+
+/**
+ * `answer_saved` fires ONCE per attempt — the autosave moment exists to
+ * prove progressive saving works, and one event per sitting keeps the
+ * stream meaningful (prompt 36: no rerender/retry duplicates). It carries
+ * NO answer content: not the question, not the selected option, not the
+ * key — just that a first save landed and whether anything is flagged.
+ */
+async function trackAnswerSavedOnce(
+  institutionId: string,
+  attempt: AttemptRow,
+  markedForReview: boolean,
+): Promise<void> {
+  if (!answerSavedOnce.claim(attempt.id)) return;
+  await trackProductAnalytics(
+    "answer_saved",
+    {
+      attemptId: attempt.id,
+      examId: attempt.exam_id,
+      markedForReview,
+    },
+    { institutionId },
+  );
+}
 
 /**
  * Autosave one question's state. The client sends the DISPLAY option index (or
@@ -605,6 +675,7 @@ export async function saveAttemptAnswer(
       .eq("snapshot_id", snapshotId)
       .eq("institution_id", institutionId);
     if (deleteError) throw deleteError;
+    await trackAnswerSavedOnce(institutionId, attempt, markedForReview);
     return { ok: true };
   }
 
@@ -621,6 +692,7 @@ export async function saveAttemptAnswer(
       { onConflict: "attempt_id,snapshot_id" },
     );
   if (upsertError) throw upsertError;
+  await trackAnswerSavedOnce(institutionId, attempt, markedForReview);
   return { ok: true };
 }
 
@@ -665,7 +737,7 @@ export async function submitAttempt(
   }
 
   const nextStatus = decision.next; // 'submitted' | 'expired'
-  const { error } = await supabase
+  const { data: lockedRow, error } = await supabase
     .from("exam_attempts")
     .update({
       status: nextStatus,
@@ -674,8 +746,45 @@ export async function submitAttempt(
     .eq("id", attemptId)
     .eq("institution_id", institutionId)
     .eq("student_id", studentId)
-    .eq("status", "in_progress"); // guard: only ever move a live attempt
+    .eq("status", "in_progress") // guard: only ever move a live attempt
+    .select("id, exam_id, started_at")
+    .maybeSingle();
   if (error) throw error;
+
+  // The CAS matched a row: THIS call is the one that locked the attempt, so
+  // it owns the submit/completion analytics moments. A losing race returns
+  // null here and fires nothing — the winner already did — which is what
+  // keeps double-clicks, retries and second tabs to exactly one event each.
+  if (lockedRow) {
+    const row = lockedRow as { id: string; exam_id: string; started_at: string };
+    const startedMs = new Date(row.started_at).getTime();
+    const durationSeconds = Number.isFinite(startedMs)
+      ? Math.max(0, Math.floor((nowMs - startedMs) / 1000))
+      : null;
+    const submissionMethod = nextStatus === "submitted" ? "explicit" : "expired";
+    await trackProductAnalytics(
+      "exam_submitted",
+      {
+        examId: row.exam_id,
+        attemptId: row.id,
+        submissionMethod,
+        durationSeconds,
+      },
+      { institutionId },
+    );
+    if (attemptCompletedOnce.claim(row.id)) {
+      await trackProductAnalytics(
+        "assessment_completed",
+        {
+          examId: row.exam_id,
+          attemptId: row.id,
+          submissionMethod,
+          durationSeconds,
+        },
+        { institutionId },
+      );
+    }
+  }
 
   attempt.status = nextStatus;
 

@@ -1,11 +1,13 @@
 /**
- * Platform audit catalog tests — prompt 31.
+ * Platform audit catalog tests — prompts 31 and 33.
  *
  * Pure module (lib/audit/platform.ts), same Node built-in runner as the rest
  * of the suite; no Supabase, no Next. Covers the closed action catalog, the
  * fail-safe normalisation (unknown action/outcome → no row), the privacy
- * bounds, and the untrusted-searchParams query resolver. The database half
- * (append-only trigger, RLS, CHECKs) is covered by
+ * bounds, and the untrusted-searchParams query resolver — including the
+ * prompt-33 operational filters (date range, actor, institution, outcome,
+ * entity) and the sensitive membership-change catalog entries. The database
+ * half (append-only trigger, RLS, CHECKs) is covered by
  * supabase/tests/platform_audit_readiness.sql, which needs a real instance.
  */
 
@@ -13,6 +15,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  AUDIT_ENTITY_TYPES,
   AUDIT_LIMITS,
   AUDIT_PAGE_SIZE,
   AUDIT_ANONYMOUS_ACTOR_ID,
@@ -22,6 +25,7 @@ import {
   isPlatformAuditAction,
   isPlatformAuditOutcome,
   platformAuditActionLabel,
+  platformAuditHasFilters,
   resolvePlatformAuditQuery,
   auditPageHref,
   type AuditEventInput,
@@ -41,6 +45,16 @@ function denialEvent(
   };
 }
 
+/** Expected UI labels for the prompt-33 additions, pinned here so a label
+ *  drift (or a missing catalog entry) fails the suite deliberately. */
+const PROMPT33_LABELS = {
+  "membership.teacher_access_changed":
+    "Granted a teacher access to the institution",
+  "membership.teacher_access_revoked":
+    "Revoked a teacher's access to the institution",
+  "institution.settings_updated": "Updated the institution's settings",
+} as const;
+
 describe("platform audit action catalog", () => {
   it("accepts every declared action and rejects everything else", () => {
     for (const action of PLATFORM_AUDIT_ACTIONS) {
@@ -57,6 +71,23 @@ describe("platform audit action catalog", () => {
       ["platform.access_denied"],
     ]) {
       assert.equal(isPlatformAuditAction(value), false, String(value));
+    }
+  });
+
+  it("includes the prompt-33 sensitive actions, each with a label", () => {
+    // Membership/role changes and administrative tenant changes must be in
+    // the closed catalog before any action can write them.
+    for (const action of [
+      "membership.teacher_access_changed",
+      "membership.teacher_access_revoked",
+      "institution.settings_updated",
+    ] as const) {
+      assert.equal(isPlatformAuditAction(action), true, action);
+      assert.equal(
+        platformAuditActionLabel(action),
+        PROMPT33_LABELS[action],
+        action,
+      );
     }
   });
 
@@ -146,6 +177,22 @@ describe("buildAuditEntry normalisation", () => {
     assert.equal(entry.actor_id, "user_pad");
     assert.equal(entry.target_id, "/platform/audit");
   });
+  it("normalises a teacher-access event targeted at the actor's tenant", () => {
+    const entry = buildAuditEntry(
+      denialEvent({
+        actorRole: "INSTITUTION_ADMIN",
+        action: "membership.teacher_access_changed",
+        targetType: "institution",
+        targetId: "inst_123",
+        outcome: "success",
+        detail: "Teacher roster row t_9: access granted (was `invited`)",
+      }),
+    );
+    assert.ok(entry);
+    assert.equal(entry.action, "membership.teacher_access_changed");
+    assert.equal(entry.target_type, "institution");
+    assert.equal(entry.target_id, "inst_123");
+  });
 });
 
 describe("platform audit action labels", () => {
@@ -164,6 +211,12 @@ describe("resolvePlatformAuditQuery (untrusted searchParams)", () => {
   it("defaults to page 1, no filter, fixed page size", () => {
     assert.deepEqual(resolvePlatformAuditQuery({}), {
       action: null,
+      outcome: null,
+      actor: null,
+      institutionId: null,
+      entityType: null,
+      from: null,
+      to: null,
       page: 1,
       pageSize: AUDIT_PAGE_SIZE,
     });
@@ -192,6 +245,68 @@ describe("resolvePlatformAuditQuery (untrusted searchParams)", () => {
       7,
     );
   });
+
+  it("keeps a valid date range and pins it to UTC day boundaries", () => {
+    const query = resolvePlatformAuditQuery({
+      from: "2026-01-05",
+      to: "2026-01-12",
+    });
+    assert.equal(query.from, "2026-01-05T00:00:00.000Z");
+    assert.equal(query.to, "2026-01-12T23:59:59.999Z");
+    assert.equal(platformAuditHasFilters(query), true);
+  });
+
+  it("drops malformed, impossible-day, and free-text date values", () => {
+    for (const raw of ["01-05-2026", "2026-13-45", "yesterday", "", "2026-1-5"]) {
+      const query = resolvePlatformAuditQuery({ from: raw, to: raw });
+      assert.equal(query.from, null, raw);
+      assert.equal(query.to, null, raw);
+    }
+  });
+
+  it("trims actor and institution filters and drops blanks/over-long values", () => {
+    const query = resolvePlatformAuditQuery({
+      actor: "  user_abc  ",
+      institution: " inst_1 ",
+    });
+    assert.equal(query.actor, "user_abc");
+    assert.equal(query.institutionId, "inst_1");
+
+    const blank = resolvePlatformAuditQuery({ actor: "   ", institution: "" });
+    assert.equal(blank.actor, null);
+    assert.equal(blank.institutionId, null);
+
+    const padded = resolvePlatformAuditQuery({
+      actor: "x".repeat(AUDIT_LIMITS.actorId + 1),
+      institution: "y".repeat(AUDIT_LIMITS.targetId + 1),
+    });
+    assert.equal(padded.actor, null);
+    assert.equal(padded.institutionId, null);
+  });
+
+  it("accepts only the controlled outcome and entity vocabularies", () => {
+    assert.equal(
+      resolvePlatformAuditQuery({ outcome: "denied" }).outcome,
+      "denied",
+    );
+    assert.equal(resolvePlatformAuditQuery({ outcome: "ok" }).outcome, null);
+
+    for (const entity of AUDIT_ENTITY_TYPES) {
+      assert.equal(
+        resolvePlatformAuditQuery({ entity }).entityType,
+        entity,
+        entity,
+      );
+    }
+    // An invented target type drops the filter — it never becomes a column
+    // value, which is what keeps the log from being an injection-shaped
+    // read path.
+    assert.equal(resolvePlatformAuditQuery({ entity: "secret_table" }).entityType, null);
+  });
+
+  it("reports no active filters when only pagination is present", () => {
+    assert.equal(platformAuditHasFilters(resolvePlatformAuditQuery({ page: "2" })), false);
+  });
 });
 
 describe("auditPageHref", () => {
@@ -206,5 +321,40 @@ describe("auditPageHref", () => {
       auditPageHref("/platform/audit", query, 3),
       "/platform/audit?action=platform.access_denied&page=3",
     );
+  });
+
+  it("round-trips every prompt-33 filter through the URL", () => {
+    const query = resolvePlatformAuditQuery({
+      action: "membership.teacher_access_changed",
+      outcome: "success",
+      actor: "user_abc",
+      institution: "inst_1",
+      entity: "institution",
+      from: "2026-01-05",
+      to: "2026-01-12",
+    });
+    const href = auditPageHref("/platform/audit", query, 2);
+    const revived = resolvePlatformAuditQuery(
+      Object.fromEntries(new URL(href, "http://x").searchParams),
+    );
+    assert.equal(revived.page, 2);
+    // Compare the filter half only — `page` is asserted above.
+    const auditFilters = (q: typeof query) => ({
+      action: q.action,
+      outcome: q.outcome,
+      actor: q.actor,
+      institutionId: q.institutionId,
+      entityType: q.entityType,
+      from: q.from,
+      to: q.to,
+    });
+    assert.deepEqual(auditFilters(revived), auditFilters(query));
+  });
+
+  it("keeps the 'none' entity sentinel in the URL (distinct from no filter)", () => {
+    const query = resolvePlatformAuditQuery({ entity: "none" });
+    const href = auditPageHref("/platform/audit", query, 1);
+    assert.equal(href, "/platform/audit?entity=none");
+    assert.equal(resolvePlatformAuditQuery({ entity: "none" }).entityType, "none");
   });
 });

@@ -184,6 +184,11 @@ export default async function ExamResultsPage({
           </p>
         </div>
         <div className="flex shrink-0">
+          <Link href={`/teacher/exams/${exam.id}/analytics`}>
+            <Button type="button" variant="secondary" size="sm">
+              Class analytics
+            </Button>
+          </Link>
           <Link href={`/teacher/exams/${exam.id}`}>
             <Button type="button" variant="ghost" size="sm">
               Back to exam

@@ -282,11 +282,18 @@ function ExamDetailBody({
                 </p>
               </div>
               {exam.status === "published" || exam.status === "closed" ? (
-                <Link href={`/teacher/exams/${exam.id}/results`}>
-                  <Button type="button" variant="secondary" size="sm">
-                    View results
-                  </Button>
-                </Link>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Link href={`/teacher/exams/${exam.id}/results`}>
+                    <Button type="button" variant="secondary" size="sm">
+                      View results
+                    </Button>
+                  </Link>
+                  <Link href={`/teacher/exams/${exam.id}/analytics`}>
+                    <Button type="button" variant="secondary" size="sm">
+                      Class analytics
+                    </Button>
+                  </Link>
+                </div>
               ) : null}
             </div>
           </Card>

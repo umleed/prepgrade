@@ -141,17 +141,14 @@ export default async function PlatformInstitutionsPage({
               their details, operational status and activity.
             </p>
           </div>
-          {/* Institution creation happens through onboarding; the button is a
-              labelled placeholder, not a dead link. */}
-          <Button
-            type="button"
-            disabled
-            title="Not yet available — institutions are created through onboarding and admin approval, which ships in a later phase"
-            className="cursor-not-allowed"
-          >
-            <PlusIcon className="h-4 w-4" />
-            Add Institution
-          </Button>
+          {/* Institution creation is a SUPER_ADMIN-gated flow (enforced
+              again in the page guard and the server action). */}
+          <Link href="/platform/institutions/new">
+            <Button type="button">
+              <PlusIcon className="h-4 w-4" />
+              Add Institution
+            </Button>
+          </Link>
         </div>
 
         {!dataSourceConfigured ? (

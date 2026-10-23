@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { connection } from "next/server";
 import { requireSuperAdmin } from "@/lib/auth/guards";
 import { roleLabel, type UserRole } from "@/lib/auth/roles";
 import {
-  auditPageHref,
+  AUDIT_ENTITY_TYPES,
+  PLATFORM_AUDIT_ACTIONS,
   platformAuditActionLabel,
+  platformAuditHasFilters,
+  auditPageHref,
   resolvePlatformAuditQuery,
-  type PlatformAuditAction,
+  type PlatformAuditQuery,
 } from "@/lib/audit/platform";
 import { listPlatformAuditEntries } from "@/lib/data/audit";
 import {
@@ -16,7 +18,9 @@ import {
   Button,
   Card,
   EmptyState,
+  Input,
   Pagination,
+  Select,
   Table,
   TableBody,
   TableCell,
@@ -67,12 +71,19 @@ function formatTimestamp(iso: string): string {
 /**
  * Platform audit log — read-only view over the append-only
  * `platform_audit_log` table (prompt 31 foundation; prompt 33 expands the
- * event catalog). SUPER_ADMIN only, enforced server-side on every request.
+ * event catalog and the operational filters).
+ * SUPER_ADMIN only, enforced server-side on every request.
  *
  * There is no edit or delete path anywhere in the app, and the database
  * refuses UPDATE/DELETE for every role (0007 migration), so this page can
  * truthfully promise immutability. Rows carry actor id, trusted role, action,
  * target, outcome, and timestamp — never secrets or personal content.
+ *
+ * FILTERS (prompt 33): date range, actor, institution, action, outcome, and
+ * entity. The form is a plain GET request; every value is re-resolved
+ * server-side through the pure `resolvePlatformAuditQuery`, which drops
+ * anything unrecognised — the URL is never trusted to name a column or a
+ * value that reaches the database.
  */
 export default async function PlatformAuditPage({
   searchParams,
@@ -105,7 +116,7 @@ export default async function PlatformAuditPage({
 
   const total = entries?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / query.pageSize));
-  const filterAction: PlatformAuditAction | null = query.action;
+  const hasFilters = platformAuditHasFilters(query);
 
   return (
     <main className="flex-1 overflow-y-auto px-4 py-6 lg:px-8">
@@ -137,28 +148,16 @@ export default async function PlatformAuditPage({
             </Alert>
           ) : null}
 
-          {/* Action filter — the only filter today; keeps the table honest
-              without inventing columns the events don't carry. */}
-          <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Audit log filters">
-            <span className="text-xs font-medium text-ink-muted">Filter action:</span>
-            <Link href={auditPageHref("/platform/audit", { ...query, action: null }, 1)}>
-              <Button type="button" size="sm" variant={filterAction === null ? "primary" : "secondary"}>
-                All
-              </Button>
-            </Link>
-            <Link href={auditPageHref("/platform/audit", { ...query, action: "platform.access_denied" }, 1)}>
-              <Button type="button" size="sm" variant={filterAction === "platform.access_denied" ? "primary" : "secondary"}>
-                Access denials
-              </Button>
-            </Link>
-          </div>
+          {/* Filter bar — server-resolved GET form; date range, actor,
+              institution, action, outcome, and entity (prompt 33). */}
+          <AuditFilterBar query={query} />
 
           {entries && entries.rows.length === 0 ? (
             <EmptyState
-              title={filterAction ? "No matching audit events" : "No platform audit events yet"}
+              title={hasFilters ? "No matching audit events" : "No platform audit events yet"}
               description={
-                filterAction
-                  ? "No events match this filter on this page. Try the All filter."
+                hasFilters
+                  ? "No events match these filters on this page. Widen the date range or clear the filters."
                   : "Denied attempts to open platform administration will appear here as they happen. An empty log means nothing has been denied — not that logging is broken."
               }
             />
@@ -226,5 +225,91 @@ export default async function PlatformAuditPage({
           ) : null}
         </div>
     </main>
+  );
+}
+
+/** Entity dropdown labels for the controlled target_type vocabulary. `"none"`
+ *  is the resolver's sentinel for rows written without a target. */
+const ENTITY_LABELS: Record<string, string> = {
+  none: "No target",
+  area: "Platform area",
+  institution: "Institution",
+  institution_application: "Institution application",
+  exam: "Exam",
+};
+
+/**
+ * Server-rendered GET filter form. Values come back through searchParams and
+ * are re-validated by the pure resolver before any query runs, so this form
+ * is presentation only — it holds no authority. Date inputs are `yyyy-mm-dd`
+ * (the resolver pins them to UTC day boundaries).
+ */
+function AuditFilterBar({ query }: { query: PlatformAuditQuery }) {
+  return (
+    <Card>
+      <form
+        action="/platform/audit"
+        method="get"
+        className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6"
+        aria-label="Audit log filters"
+      >
+        <Input
+          type="date"
+          name="from"
+          label="From (UTC)"
+          defaultValue={query.from ? query.from.slice(0, 10) : ""}
+        />
+        <Input
+          type="date"
+          name="to"
+          label="To (UTC)"
+          defaultValue={query.to ? query.to.slice(0, 10) : ""}
+        />
+        <Input
+          type="text"
+          name="actor"
+          label="Actor ID"
+          placeholder="Clerk user id"
+          defaultValue={query.actor ?? ""}
+        />
+        <Input
+          type="text"
+          name="institution"
+          label="Institution ID"
+          placeholder="Rows targeted at this tenant"
+          defaultValue={query.institutionId ?? ""}
+        />
+        <Select name="action" label="Action" defaultValue={query.action ?? ""}>
+          <option value="">All actions</option>
+          {PLATFORM_AUDIT_ACTIONS.map((action) => (
+            <option key={action} value={action}>
+              {platformAuditActionLabel(action)}
+            </option>
+          ))}
+        </Select>
+        <Select name="outcome" label="Outcome" defaultValue={query.outcome ?? ""}>
+          <option value="">All outcomes</option>
+          <option value="success">Success</option>
+          <option value="failed">Failed</option>
+          <option value="denied">Denied</option>
+        </Select>
+        <Select name="entity" label="Entity" defaultValue={query.entityType ?? ""}>
+          <option value="">All entities</option>
+          {AUDIT_ENTITY_TYPES.map((entity) => (
+            <option key={entity} value={entity}>
+              {ENTITY_LABELS[entity] ?? entity}
+            </option>
+          ))}
+        </Select>
+        <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-3 xl:col-span-6">
+          <Button type="submit">Apply filters</Button>
+          {platformAuditHasFilters(query) ? (
+            <a href="/platform/audit" className="text-sm font-medium text-brand-600 hover:underline">
+              Clear filters
+            </a>
+          ) : null}
+        </div>
+      </form>
+    </Card>
   );
 }

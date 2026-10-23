@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth/guards";
+import { trackProductAnalytics } from "@/lib/product-analytics/server";
 import { validateQuestion, type QuestionErrors, type QuestionInput } from "@/lib/questions";
 import {
   createQuestion,
@@ -34,11 +35,15 @@ async function requireQuestionManager() {
   return {
     institutionId: principal.institutionId as string,
     userId: principal.userId,
+    role: principal.role,
   };
 }
 
 function revalidateQuestionPaths(id?: string) {
   revalidatePath("/teacher/questions");
+  // The institution-owned question bank renders the same `questions` table;
+  // refresh it so an admin's create/edit shows without a manual reload.
+  revalidatePath("/institution/question-bank");
   if (id) revalidatePath(`/teacher/questions/${id}`);
 }
 
@@ -46,7 +51,7 @@ function revalidateQuestionPaths(id?: string) {
 export async function createQuestionAction(
   input: QuestionInput,
 ): Promise<QuestionActionResult> {
-  const { institutionId, userId } = await requireQuestionManager();
+  const { institutionId, userId, role } = await requireQuestionManager();
 
   const errors = validateQuestion(input);
   if (Object.keys(errors).length > 0) return { ok: false, errors };
@@ -62,6 +67,22 @@ export async function createQuestionAction(
     }
     return { ok: false, errors: result.errors };
   }
+
+  // Product analytics (prompt 36): the authoring moment, fired once after the
+  // committed insert. Metadata only — question text, options, the answer key
+  // and the explanation never leave the database (AGENTS.md §7). Bulk CSV
+  // imports (prompt 34) intentionally do NOT fire this: a 500-row file is not
+  // 500 authoring events.
+  await trackProductAnalytics(
+    "question_created",
+    {
+      questionId: result.id,
+      difficulty: input.difficulty,
+      questionType: input.questionType,
+      role,
+    },
+    { institutionId },
+  );
 
   revalidateQuestionPaths(result.id);
   return { ok: true, id: result.id };

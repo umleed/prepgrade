@@ -5,8 +5,13 @@ import { SIGN_OUT_REDIRECT_URL } from "@/lib/auth/access";
 import { requireSession } from "@/lib/auth/guards";
 import { getRegistrationIntent } from "@/lib/auth/registration-context";
 import { roleLabel } from "@/lib/auth/roles";
+import {
+  getApplicantApplicationState,
+  type ApplicantApplicationState,
+} from "@/lib/data/institution-applications";
 import { Badge, Button, Card } from "@/components/ui";
 import { OnboardingPanel } from "./onboarding-panel";
+import { InstitutionApplicationSection } from "./institution-application-section";
 
 export const metadata: Metadata = {
   title: "Get started",
@@ -44,6 +49,32 @@ export default async function OnboardingPage() {
   const role = principal?.role ?? null;
   const greeting = context.displayName || context.email || "there";
 
+  // Institution-intent applicants get the restricted onboarding dashboard:
+  // their OWN authoritative application record in any status (draft →
+  // decided), read from the database with the trusted Clerk user id — never
+  // from signup metadata. Students/teachers keep the plain onboarding panel.
+  const isInstitutionIntent =
+    intent === "school" || intent === "cbt_centre";
+  let applicationState: ApplicantApplicationState | null = null;
+  let applicationsUnavailable = false;
+  if (isInstitutionIntent && principal) {
+    try {
+      applicationState = await getApplicantApplicationState(principal.userId);
+    } catch (error) {
+      // Missing table / unconfigured data source / an unapplied migration (or
+      // any read failure) → show an honest "not available" notice rather than a
+      // form that cannot work. `getApplicantApplicationState` throws a real
+      // Error with a readable message (the raw PostgREST object is not an Error
+      // and would log as `{}`), so log its message and keep the cause visible.
+      console.error(
+        "[onboarding] application status read failed:",
+        error instanceof Error ? error.message : error,
+      );
+      applicationsUnavailable = true;
+    }
+  }
+  const defaultType = intent === "cbt_centre" ? "cbt_centre" : "school";
+
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-16">
       <Card>
@@ -79,6 +110,14 @@ export default async function OnboardingPage() {
           </dl>
 
           <OnboardingPanel initialIntent={intent} />
+
+          {isInstitutionIntent ? (
+            <InstitutionApplicationSection
+              defaultType={defaultType}
+              state={applicationState}
+              unavailable={applicationsUnavailable}
+            />
+          ) : null}
 
           <div className="flex flex-wrap gap-3 border-t border-border pt-4">
             <SignOutButton redirectUrl={SIGN_OUT_REDIRECT_URL}>

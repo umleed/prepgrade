@@ -2,8 +2,17 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import {
+  PLATFORM_MAIN_NAV,
+  PLATFORM_PLATFORM_NAV,
+  defaultExpandedGroupLabel,
+  isPlatformNavChildActive,
+  isPlatformNavItemActive,
+  type PlatformNavIconKey,
+  type PlatformNavItem,
+} from "@/lib/navigation/platform-nav";
 import {
   ArchiveIcon,
   BuildingIcon,
@@ -26,61 +35,43 @@ import {
  * Navigation for the platform (super-admin) area — dark shell per the
  * PrepGrade super-admin design reference.
  *
+ * The navigation contract (destinations, active states, which group opens on
+ * load) lives in `lib/navigation/platform-nav.ts` and is covered by `npm test`;
+ * this file only renders it.
+ *
  * Same honesty contract as before (prompt 31): items whose route hasn't been
  * built use `href: null` and render as non-interactive, dimmed rows with a
  * truthful "Not yet available" tooltip — never as dead links implying a
- * finished capability. Today only Dashboard, Institutions, and Audit Logs
- * have real routes; the remaining rows preview the planned IA so the shell
- * matches the approved design without pretending features exist.
+ * finished capability. Today Dashboard, Institutions, Analytics (the canonical
+ * `/platform/usage` usage & activity surface), Audit Logs, System Health, and
+ * Subscription Plans (read-only unavailable state) have real routes; the
+ * remaining rows preview the planned IA so the shell matches the approved
+ * design without pretending features exist.
+ *
+ * Each enabled destination belongs to exactly one entry — `/platform/usage` is
+ * reached through Analytics alone, never also through the Institutions submenu,
+ * so two rows can never claim the same page.
  */
-type NavItem = {
-  label: string;
-  href: string | null;
-  icon: React.ReactNode;
-  /** Optional sub-routes shown when the parent section is expanded. */
-  children?: { label: string; href: string | null }[];
+
+/* --- Icons: keyed in the pure nav config, drawn here so it stays JSX-free. --- */
+
+const NAV_ICONS: Record<PlatformNavIconKey, ReactNode> = {
+  dashboard: <HomeIcon />,
+  institutions: <BuildingIcon />,
+  users: <UsersIcon />,
+  assessments: <DocumentIcon />,
+  "question-bank": <GridIcon />,
+  analytics: <ChartIcon />,
+  billing: <CardIcon />,
+  moderation: <ShieldIcon />,
+  "system-health": <HeartPulseIcon />,
+  settings: <SettingsIcon />,
+  plans: <TagIcon />,
+  "payment-history": <CardIcon />,
+  "audit-logs": <ArchiveIcon />,
+  announcements: <MegaphoneIcon />,
+  help: <QuestionIcon />,
 };
-
-const mainNav: NavItem[] = [
-  { label: "Dashboard", href: "/platform", icon: <HomeIcon /> },
-  {
-    label: "Institutions",
-    href: "/platform/institutions",
-    icon: <BuildingIcon />,
-    children: [
-      { label: "All Institutions", href: "/platform/institutions" },
-      { label: "Add Institution", href: null },
-      { label: "Pending Approvals", href: null },
-      { label: "Subscription Plans", href: null },
-      { label: "Usage & Activity", href: null },
-    ],
-  },
-  { label: "Users", href: null, icon: <UsersIcon /> },
-  { label: "Assessments", href: null, icon: <DocumentIcon /> },
-  { label: "Question Bank", href: null, icon: <GridIcon /> },
-  { label: "Analytics", href: null, icon: <ChartIcon /> },
-  { label: "Billing & Subscriptions", href: null, icon: <CardIcon /> },
-  { label: "Moderation", href: null, icon: <ShieldIcon /> },
-  { label: "System Health", href: null, icon: <HeartPulseIcon /> },
-  { label: "Settings", href: null, icon: <SettingsIcon /> },
-];
-
-const platformNav: NavItem[] = [
-  { label: "Plans & Features", href: null, icon: <TagIcon /> },
-  { label: "Payment History", href: null, icon: <CardIcon /> },
-  { label: "Audit Logs", href: "/platform/audit", icon: <ArchiveIcon /> },
-  { label: "Announcements", href: null, icon: <MegaphoneIcon /> },
-  { label: "Help & Support", href: null, icon: <QuestionIcon /> },
-];
-
-function isActive(href: string | null, pathname: string): boolean {
-  if (href === null) return false;
-  return (
-    pathname === href ||
-    // Keep "Dashboard" inactive on sibling routes like /platform/audit.
-    (href !== "/platform" && pathname.startsWith(`${href}/`))
-  );
-}
 
 function NavRow({
   item,
@@ -89,13 +80,13 @@ function NavRow({
   expanded,
   onToggleExpand,
 }: {
-  item: NavItem;
+  item: PlatformNavItem;
   pathname: string;
   collapsed: boolean;
   expanded: boolean;
   onToggleExpand: () => void;
 }) {
-  const active = isActive(item.href, pathname);
+  const active = isPlatformNavItemActive(pathname, item);
   const isDisabled = item.href === null;
   const hasChildren = Boolean(item.children?.length);
 
@@ -111,7 +102,7 @@ function NavRow({
 
   const row = (
     <>
-      <span className="shrink-0 [&>svg]:h-5 [&>svg]:w-5">{item.icon}</span>
+      <span className="shrink-0 [&>svg]:h-5 [&>svg]:w-5">{NAV_ICONS[item.icon]}</span>
       {!collapsed ? <span className="min-w-0 flex-1 text-left">{item.label}</span> : null}
       {!collapsed && hasChildren ? (
         <svg
@@ -160,7 +151,13 @@ function NavRow({
       {!collapsed && hasChildren && expanded ? (
         <ul className="mt-0.5 flex flex-col gap-0.5 pl-11">
           {item.children!.map((child) => {
-            const childActive = isActive(child.href, pathname);
+            // Most specific match wins: on /platform/institutions/new only
+            // "Add Institution" lights up, not also "All Institutions".
+            const childActive = isPlatformNavChildActive(
+              pathname,
+              item.children!,
+              child,
+            );
             const childClasses = cn(
               "flex w-full items-center rounded-lg px-3 py-1.5 text-left text-sm transition-colors",
               childActive
@@ -198,7 +195,7 @@ function NavSection({
   onToggleExpand,
 }: {
   heading?: string;
-  items: NavItem[];
+  items: readonly PlatformNavItem[];
   pathname: string;
   collapsed: boolean;
   expandedLabel: string | null;
@@ -235,10 +232,12 @@ function NavSection({
 export function PlatformSidebar({ userName }: { userName: string }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
-  // The Institutions group starts open when the current route lives under it,
-  // mirroring the expanded submenu in the design reference.
+  // The Institutions group starts open when the current route lives under it
+  // (or is a screen filed in its submenu, like Subscription Plans), mirroring
+  // the expanded submenu in the design reference. /platform/usage is excluded:
+  // it belongs to Analytics, a top-level entry with no submenu.
   const [expandedLabel, setExpandedLabel] = useState<string | null>(() =>
-    pathname.startsWith("/platform/institutions") ? "Institutions" : null,
+    defaultExpandedGroupLabel(pathname),
   );
 
   const toggleExpand = (label: string) =>
@@ -289,7 +288,7 @@ export function PlatformSidebar({ userName }: { userName: string }) {
       {/* Navigation */}
       <div className="mt-6 flex-1 space-y-6 overflow-y-auto px-3 pb-4">
         <NavSection
-          items={mainNav}
+          items={PLATFORM_MAIN_NAV}
           pathname={pathname}
           collapsed={collapsed}
           expandedLabel={expandedLabel}
@@ -298,7 +297,7 @@ export function PlatformSidebar({ userName }: { userName: string }) {
 
         <NavSection
           heading="Platform"
-          items={platformNav}
+          items={PLATFORM_PLATFORM_NAV}
           pathname={pathname}
           collapsed={collapsed}
           expandedLabel={expandedLabel}
